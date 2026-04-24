@@ -765,45 +765,41 @@ async function startServer() {
           if (uiterlijkMatch) shippingText = uiterlijkMatch[0];
         }
 
-        // 5. Images (Targeted extraction for Bol.com)
+        // 5. Images (Targeted extraction for Bol.com - thumbnails only)
         let images: string[] = [];
         
-        // Strategy 1: Product Gallery Pattern (Specifically requested)
-        document.querySelectorAll('img[alt^="Afbeelding nummer"]').forEach(img => {
-          const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
-          if (src && src.includes('media.s-bol.com')) images.push(src);
-        });
+        const thumbnailSelectors = [
+          '[data-test="product-images-thumbnail"] img',
+          '.js_product_img_carousel img',
+          '.pdp-images__thumbnail img'
+        ];
 
-        // Strategy 2: Main Image fallback (If Strategy 1 missed it or for single-image products)
-        if (images.length === 0) {
-          const mainSelectors = [
-            '[data-test="product-main-image"] img',
-            '.js_main_product_image',
-            '.pdp-main-image img',
-            '.media-viewer__main-image'
-          ];
-          mainSelectors.forEach(s => {
-            const img = document.querySelector(s);
-            if (img) {
-              const src = (img as any).src || img.getAttribute('src');
-              if (src && src.startsWith('http')) images.push(src);
+        thumbnailSelectors.forEach(s => {
+          document.querySelectorAll(s).forEach(img => {
+            const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
+            if (src && src.includes('media.s-bol.com')) {
+              // Normalize to large version
+              const largeSrc = src.replace(/\/\d+x\d+\//, "/large/")
+                                 .replace("/small/", "/large/")
+                                 .replace("/slot/", "/large/")
+                                 .replace("/thumb/", "/large/")
+                                 .replace("/100x100/", "/large/")
+                                 .replace("/124x124/", "/large/")
+                                 .replace("/140x140/", "/large/")
+                                 .replace("/210x210/", "/large/")
+                                 .replace("/40x40/", "/large/");
+              if (!images.includes(largeSrc)) images.push(largeSrc);
             }
           });
-        }
+        });
 
-        // Strategy 3: Specific Media Containers (Only if no images found yet)
+        // Fallback for main image if no thumbnails (only if needed)
         if (images.length === 0) {
-          const gallerySelectors = [
-            '.js_product_media_items img',
-            '[data-test="pdp-images"] img',
-            '.slot-media-viewer img'
-          ];
-          gallerySelectors.forEach(s => {
-            document.querySelectorAll(s).forEach(img => {
-              const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
-              if (src && src.includes('media.s-bol.com')) images.push(src);
-            });
-          });
+          const mainImg = document.querySelector('[data-test="product-main-image"] img') || document.querySelector('.js_main_product_image');
+          if (mainImg) {
+            const src = (mainImg as any).src || mainImg.getAttribute('src');
+            if (src && src.startsWith('http')) images.push(src);
+          }
         }
         
         // 6. Variations & A+
@@ -1303,7 +1299,8 @@ async function startServer() {
           lower.includes('play-button') || lower.includes('logo') || lower.includes('video-button') ||
           lower.includes('loading') || lower.includes('transparent-pixel') || lower.includes('dot-') ||
           lower.includes('swatch') || lower.includes('feedback') || lower.includes('magnify') ||
-          lower.includes('video-placeholder') || lower.includes('sash') || lower.includes('grey-pixel')) return false;
+          lower.includes('video-placeholder') || lower.includes('sash') || lower.includes('grey-pixel') ||
+          lower.includes('_ss40_') || lower.includes('_sr38,50_')) return false;
       return true;
     });
 
