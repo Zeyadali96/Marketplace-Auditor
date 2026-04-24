@@ -1,3 +1,4 @@
+// Trigger sync - Playwright dependencies fixed
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
