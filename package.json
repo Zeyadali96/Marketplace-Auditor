@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "postinstall": "playwright install chromium"
+    "postinstall": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

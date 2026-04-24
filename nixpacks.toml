@@ -1,0 +1,7 @@
+# Nixpacks configuration for Playwright dependencies
+[phases.setup]
+nixPkgs = ["playwright-driver.browsers"]
+
+[phases.build]
+dependsOn = ["setup"]
+cmds = ["npm install", "npx playwright install --with-deps chromium", "npm run build"]
