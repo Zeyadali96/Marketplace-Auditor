@@ -1,7 +1,9 @@
-# Nixpacks configuration for Playwright dependencies
 [phases.setup]
-nixPkgs = ["playwright-driver.browsers", "glib", "nss", "nspr", "atk", "at-spi2-atk", "libdrm", "expat", "libxcb", "libxkbcommon", "mesa", "alsa-lib", "pango", "cairo"]
+nixPkgs = ["nodejs", "glib", "nss", "nspr", "atk", "at-spi2-atk", "cups", "libdrm", "libxkbcommon", "pango", "cairo", "alsa-lib", "mesa", "expat"]
 
 [phases.build]
-dependsOn = ["setup"]
-cmds = ["npm install", "npx playwright install --with-deps chromium", "npm run build"]
+cmds = [
+  "npm install",
+  "npx playwright install --with-deps chromium",
+  "npm run build"
+]
