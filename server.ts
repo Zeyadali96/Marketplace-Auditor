@@ -14,10 +14,14 @@ import { chromium } from "playwright";
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = Number(process.env.PORT) || 8080;
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
+
+  // Health check routes for Railway
+  app.get('/health', (req, res) => res.send('OK'));
+  app.get('/api/health', (req, res) => res.send('OK'));
 
   // API Routes
   
@@ -69,7 +73,7 @@ async function startServer() {
       const url = `https://www.${domain}/dp/${asin}`;
       
       browser = await chromium.launch({ 
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
       }).catch(err => {
         console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Browser launch failed. If you see "libglib" errors, ensure system dependencies are installed. On Railway, the provided nixpacks.toml should fix this. Error: ${err.message}`);
@@ -494,7 +498,7 @@ async function startServer() {
       console.log(`Starting Bol Audit for EAN: ${ean}`);
       
       browser = await chromium.launch({ 
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
       }).catch(err => {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);

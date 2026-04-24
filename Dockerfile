@@ -1,18 +1,12 @@
-# Use the official Microsoft Playwright image which has ALL libraries pre-installed
+# Use the lightweight Playwright-ready image
 FROM mcr.microsoft.com/playwright:v1.41.0-jammy
-
-# Set working directory
 WORKDIR /app
-
-# Copy package files and install dependencies
 COPY package*.json ./
-RUN npm install
-
-# Copy the rest of the application code
+# Install only production deps to save memory
+RUN npm install --only=production
 COPY . .
-
-# Build the application
 RUN npm run build
-
-# Start the application
+# Railway requires the app to listen on 0.0.0.0
+ENV PORT=8080
+EXPOSE 8080
 CMD ["npm", "start"]
