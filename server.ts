@@ -70,7 +70,12 @@ async function startServer() {
       
       browser = await chromium.launch({ 
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+          '--no-sandbox', 
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu'
+        ]
       }).catch(err => {
         console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Browser launch failed. If you see "libglib" errors, ensure system dependencies are installed. On Railway, the provided nixpacks.toml should fix this. Error: ${err.message}`);
@@ -496,7 +501,12 @@ async function startServer() {
       
       browser = await chromium.launch({ 
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+          '--no-sandbox', 
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu'
+        ]
       }).catch(err => {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
@@ -765,7 +775,7 @@ async function startServer() {
           if (uiterlijkMatch) shippingText = uiterlijkMatch[0];
         }
 
-        // 5. Images (Targeted extraction for Bol.com - thumbnails only)
+        // 5. Images (Strictly Target thumbnails section for Bol.com)
         let images: string[] = [];
         
         const thumbnailSelectors = [
@@ -776,29 +786,35 @@ async function startServer() {
 
         thumbnailSelectors.forEach(s => {
           document.querySelectorAll(s).forEach(img => {
-            const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
-            if (src && src.includes('media.s-bol.com')) {
-              // Normalize to large version
-              const largeSrc = src.replace(/\/\d+x\d+\//, "/large/")
-                                 .replace("/small/", "/large/")
-                                 .replace("/slot/", "/large/")
-                                 .replace("/thumb/", "/large/")
-                                 .replace("/100x100/", "/large/")
-                                 .replace("/124x124/", "/large/")
-                                 .replace("/140x140/", "/large/")
-                                 .replace("/210x210/", "/large/")
-                                 .replace("/40x40/", "/large/");
-              if (!images.includes(largeSrc)) images.push(largeSrc);
+            // Ensure we are inside a thumbnail container and NOT in an A+ or recommended section
+            const isInsideAplus = !!img.closest('.manufacturer-info, .product-info, [data-test="product-info"], .js_product_info, .aplus-v2, #aplus');
+            const isInsideRecommended = !!img.closest('.recommendations, .ux-selection-list, [data-test="recommendations"]');
+            
+            if (!isInsideAplus && !isInsideRecommended) {
+              const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
+              if (src && src.includes('media.s-bol.com')) {
+                // Normalize to large version
+                const largeSrc = src.replace(/\/\d+x\d+\//, "/large/")
+                                   .replace("/small/", "/large/")
+                                   .replace("/slot/", "/large/")
+                                   .replace("/thumb/", "/large/")
+                                   .replace("/100x100/", "/large/")
+                                   .replace("/124x124/", "/large/")
+                                   .replace("/140x140/", "/large/")
+                                   .replace("/210x210/", "/large/")
+                                   .replace("/40x40/", "/large/");
+                if (!images.includes(largeSrc)) images.push(largeSrc);
+              }
             }
           });
         });
 
-        // Fallback for main image if no thumbnails (only if needed)
+        // Fallback for main image IF AND ONLY IF no thumbnails were found (safety net)
         if (images.length === 0) {
           const mainImg = document.querySelector('[data-test="product-main-image"] img') || document.querySelector('.js_main_product_image');
           if (mainImg) {
             const src = (mainImg as any).src || mainImg.getAttribute('src');
-            if (src && src.startsWith('http')) images.push(src);
+            if (src && src.startsWith('http') && !src.includes('pixel')) images.push(src);
           }
         }
         
