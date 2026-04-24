@@ -73,7 +73,7 @@ async function startServer() {
       const url = `https://www.${domain}/dp/${asin}`;
       
       browser = await chromium.launch({ 
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
       }).catch(err => {
         console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Browser launch failed. If you see "libglib" errors, ensure system dependencies are installed. On Railway, the provided nixpacks.toml should fix this. Error: ${err.message}`);
@@ -498,7 +498,7 @@ async function startServer() {
       console.log(`Starting Bol Audit for EAN: ${ean}`);
       
       browser = await chromium.launch({ 
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
       }).catch(err => {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);

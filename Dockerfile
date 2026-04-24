@@ -1,12 +1,9 @@
-# Use the lightweight Playwright-ready image
-FROM mcr.microsoft.com/playwright:v1.41.0-jammy
+FROM mcr.microsoft.com/playwright:v1.44.0-jammy
 WORKDIR /app
 COPY package*.json ./
-# Install only production deps to save memory
-RUN npm install --only=production
+RUN npm install
 COPY . .
 RUN npm run build
-# Railway requires the app to listen on 0.0.0.0
-ENV PORT=8080
+# Railway dynamically assigns a port; we must be ready for it
 EXPOSE 8080
 CMD ["npm", "start"]
