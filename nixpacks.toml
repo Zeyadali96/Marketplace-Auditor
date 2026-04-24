@@ -1,9 +1,0 @@
-[phases.setup]
-nixPkgs = ["nodejs", "glib", "nss", "nspr", "atk", "at-spi2-atk", "cups", "libdrm", "libxkbcommon", "pango", "cairo", "alsa-lib", "mesa", "expat", "libxcb"]
-
-[phases.build]
-cmds = [
-  "npm install",
-  "npx playwright install --with-deps chromium",
-  "npm run build"
-]
