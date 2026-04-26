@@ -507,12 +507,20 @@ async function startServer() {
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
         extraHTTPHeaders: {
-          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Referer': 'https://www.google.com/'
+            'Accept-Language': 'en-US,en;q=0.9,nl;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Referer': 'https://www.google.com/'
         }
       });
 
@@ -531,7 +539,7 @@ async function startServer() {
       // Navigate to search results
       console.log(`Navigating to: ${searchUrl}`);
       try {
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 45000 });
       } catch (e: any) {
         if (e.name === 'TimeoutError') {
           console.warn("Bol search navigation timed out, attempting to proceed...");
@@ -550,11 +558,12 @@ async function startServer() {
                text.includes('To discuss automated access to Amazon data please contact') ||
                text.includes('Ben je een robot?') ||
                text.includes('rustig aan speed racer') ||
-               text.includes('Je gaat iets te snel');
+               text.includes('Je gaat iets te snel') ||
+               text.includes('is geblokkeerd');
       });
 
       if (isBlocked) {
-        throw new Error("Bol.com blocked the request (Rate limited / Speed Racer detected). Please wait a few minutes.");
+        throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system. Running on cloud providers like Railway requires a residential proxy.");
       }
 
       // Check if we are on a search page or product page
