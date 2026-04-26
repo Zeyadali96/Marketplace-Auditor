@@ -10,11 +10,14 @@ import { google } from "googleapis";
 import stringSimilarity from "string-similarity";
 import sharp from "sharp";
 import { differenceInDays, parse } from 'date-fns';
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import stealth from "puppeteer-extra-plugin-stealth";
+chromium.use(stealth());
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 8080;
+  // If running on Railway, respect its PORT. Otherwise, AI Studio strictly requires 3000.
+  const PORT = process.env.IS_RAILWAY === 'true' ? (Number(process.env.PORT) || 8080) : 3000;
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
