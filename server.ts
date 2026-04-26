@@ -767,14 +767,13 @@ async function startServer() {
           if (uiterlijkMatch) shippingText = uiterlijkMatch[0];
         }
 
-        // 5. Images (Bol.com - thumbnails only)
+        // 5. Images (Extracting main and secondary images based on alt text)
         let images: string[] = [];
         
-        const thumbnailSelector = '[data-test="product-images-thumbnail"] img';
-        document.querySelectorAll(thumbnailSelector).forEach(img => {
+        document.querySelectorAll('img[alt^="Afbeelding nummer"]').forEach(img => {
           const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
           if (src && src.includes('media.s-bol.com')) {
-            // Normalize to large version
+            // Normalize to large version if applicable
             const largeSrc = src.replace(/\/\d+x\d+\//, "/large/")
                                .replace("/small/", "/large/")
                                .replace("/slot/", "/large/")
@@ -783,10 +782,44 @@ async function startServer() {
                                .replace("/124x124/", "/large/")
                                .replace("/140x140/", "/large/")
                                .replace("/210x210/", "/large/")
+                               .replace("/300x300/", "/large/")
                                .replace("/40x40/", "/large/");
             if (!images.includes(largeSrc)) images.push(largeSrc);
           }
         });
+
+        // Fallback or broader search
+        if (images.length === 0) {
+          const thumbnailSelectors = [
+            '[data-test="product-images-thumbnail"] img',
+            '.js_product_img_carousel img',
+            '.pdp-images__thumbnail img'
+          ];
+
+          thumbnailSelectors.forEach(s => {
+            document.querySelectorAll(s).forEach(img => {
+              // Ensure we are inside a thumbnail container and NOT in an A+ or recommended section
+              const isInsideAplus = !!img.closest('.manufacturer-info, .product-info, [data-test="product-info"], .js_product_info');
+              const isInsideRecommended = !!img.closest('.recommendations, .ux-selection-list, [data-test="recommendations"]');
+              
+              if (!isInsideAplus && !isInsideRecommended) {
+                const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
+                if (src && src.includes('media.s-bol.com')) {
+                  const largeSrc = src.replace(/\/\d+x\d+\//, "/large/")
+                                     .replace("/small/", "/large/")
+                                     .replace("/slot/", "/large/")
+                                     .replace("/thumb/", "/large/")
+                                     .replace("/100x100/", "/large/")
+                                     .replace("/124x124/", "/large/")
+                                     .replace("/140x140/", "/large/")
+                                     .replace("/210x210/", "/large/")
+                                     .replace("/40x40/", "/large/");
+                  if (!images.includes(largeSrc)) images.push(largeSrc);
+                }
+              }
+            });
+          });
+        }
 
         // Fallback for main image IF AND ONLY IF no thumbnails were found (safety net)
         if (images.length === 0) {
