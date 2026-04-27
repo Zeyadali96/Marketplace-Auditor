@@ -625,6 +625,7 @@ async function startServer() {
                              return !!document.querySelector('.product-list, .product-item--grid, [data-test="product-list"]');
                            });
       
+      let searchResultImage: string | null = null;
       if (isSearchPage) {
         console.log("Search page detected, looking for product link...");
         // Try to find the first product link - more robust selector
@@ -632,6 +633,26 @@ async function startServer() {
         await page.waitForSelector(firstProductSelector, { timeout: 10000 }).catch(() => null);
         const firstProductLink = await page.getAttribute(firstProductSelector, 'href').catch(() => null);
         
+        searchResultImage = await page.evaluate(function() {
+          // @ts-ignore
+          if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
+          const img = document.querySelector('.product-item--row img, .product-item--grid img, .product-list img, [data-test="product-image"] img, [data-test="product-image"], img.product-image');
+          if (img) {
+            const src = (img as any).src || img.getAttribute('data-src') || img.getAttribute('src');
+            if (src && typeof src === 'string') {
+              return src.replace(/\/\d+x\d+\//, "/large/")
+                        .replace("/small/", "/large/")
+                        .replace("/thumb/", "/large/")
+                        .replace("/100x100/", "/large/")
+                        .replace("/124x124/", "/large/")
+                        .replace("/140x140/", "/large/")
+                        .replace("/210x210/", "/large/")
+                        .replace("/40x40/", "/large/");
+            }
+          }
+          return null;
+        }).catch(() => null);
+
         if (firstProductLink) {
           const productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
           console.log(`Navigating to product URL: ${productUrl}`);
@@ -701,7 +722,8 @@ async function startServer() {
       // Wait for media container specifically
       await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 10000 }).catch(() => null);
 
-      const liveDataRaw = await page.evaluate(function() {
+      const evaluateArgs = { searchResultImage };
+      const liveDataRaw = await page.evaluate(function(args) {
         // @ts-ignore
         if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
         
@@ -961,6 +983,15 @@ async function startServer() {
         }
         bullets = Array.from(extractedSet);
 
+        // In case we only have 1 image on bol detail page and doesn't have any alt tag "Afbeelding nummer" extract image next to product details in search results
+        if (images.length === 1 && document.querySelectorAll('img[alt^="Afbeelding nummer"]').length === 0 && args.searchResultImage) {
+          if (!images.includes(args.searchResultImage)) {
+            images.push(args.searchResultImage);
+          }
+        } else if (images.length === 0 && args.searchResultImage) {
+          images.push(args.searchResultImage);
+        }
+
         return {
           title,
           description,
@@ -971,7 +1002,7 @@ async function startServer() {
           variations: hasVariations ? 1 : 0,
           hasAPlus: hasAPlus ? 1 : 0
         };
-      });
+      }, evaluateArgs);
 
       console.log(`Extracted Title: ${liveDataRaw.title}`);
       console.log(`Extracted Price: ${liveDataRaw.price}`);
@@ -1100,7 +1131,7 @@ async function startServer() {
       // Specific requested mappings Target: "Main Live Image", "Image 1", "Live Image 1"
       "Main Live Image": liveFirst ? `=IMAGE("${liveFirst}")` : "",
       "Image 1": masterFirst, 
-      "Live Image 1": liveFirst,
+      "Live Image 1": (mode === 'bol' && auditResult.images?.live?.[1]) ? auditResult.images?.live?.[1] : liveFirst,
       
       "A+ Content": getAPlusText(auditResult.hasAPlus.live),
       "A+": getAPlusText(auditResult.hasAPlus.live),
@@ -1136,9 +1167,16 @@ async function startServer() {
     }
 
     // Live Images 1-10
-    for (let i = 1; i <= 10; i++) {
-      const url = liveImgs[i-1] || "";
-      sharedData[`${prefix} Live Image ${i}`] = url ? `=IMAGE("${url}")` : "";
+    if (mode === 'bol') {
+      for (let i = 1; i <= 10; i++) {
+        const url = liveImgs[i] || "";
+        sharedData[`${prefix} Live Image ${i}`] = url ? `=IMAGE("${url}")` : "";
+      }
+    } else {
+      for (let i = 1; i <= 10; i++) {
+        const url = liveImgs[i-1] || "";
+        sharedData[`${prefix} Live Image ${i}`] = url ? `=IMAGE("${url}")` : "";
+      }
     }
 
     if (mode === 'amazon') {
