@@ -209,10 +209,10 @@ export default function App() {
 
     const masterData = {
       title: mode === 'bol' 
-        ? getVal(row, 'Bol Title', 'Title NL', 'title nl')
+        ? getVal(row, 'Bol Title', 'Title NL', 'title nl', 'Title', 'Product Name', 'Master Title')
         : getVal(row, 'Amazon Title', `AMZ title${suffix}`, `Title${suffix}`, `Amazon Title ${langCode}`),
       description: mode === 'bol'
-        ? getVal(row, 'Bol Description', 'Body NL', 'body nl')
+        ? getVal(row, 'Bol Description', 'Body NL', 'body nl', 'Description', 'Product Description', 'Master Description')
         : getVal(row, 'Amazon Description', `AMZ body${suffix}`, `Description${suffix}`, `Amazon Description ${langCode}`),
       bullets: [
         getVal(row, 'Bullet point 1', `Bullet point 1${suffix}`),

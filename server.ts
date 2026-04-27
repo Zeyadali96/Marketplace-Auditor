@@ -75,9 +75,23 @@ async function startServer() {
       const domain = marketplace || 'amazon.com';
       const url = `https://www.${domain}/dp/${asin}`;
       
-      browser = await chromium.launch({ 
+      const proxyServer = process.env.PROXY_SERVER;
+      const proxyUsername = process.env.PROXY_USERNAME;
+      const proxyPassword = process.env.PROXY_PASSWORD;
+      
+      const launchOptions: any = {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
-      }).catch(err => {
+      };
+
+      if (proxyServer) {
+        launchOptions.proxy = {
+          server: proxyServer,
+          username: proxyUsername || undefined,
+          password: proxyPassword || undefined,
+        };
+      }
+
+      browser = await chromium.launch(launchOptions).catch(err => {
         console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Browser launch failed. If you see "libglib" errors, ensure system dependencies are installed. On Railway, the provided nixpacks.toml should fix this. Error: ${err.message}`);
       });
@@ -272,15 +286,27 @@ async function startServer() {
             dateStr = dateStr.split('-')[0].trim();
           }
           
-          // Basic Dutch parsing for Amazon.nl
-          const nlMonthMap: Record<string, number> = {
-            'januari': 0, 'februari': 1, 'maart': 2, 'april': 3, 'mei': 4, 'juni': 5,
-            'juli': 6, 'augustus': 7, 'september': 8, 'oktober': 9, 'november': 10, 'december': 11
+          // Comprehensive month mapping for EU Amazon marketplaces
+          const euMonthMap: Record<string, number> = {
+            // English
+            'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5, 'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
+            // Dutch & generic Germanic
+            'januari': 0, 'februari': 1, 'maart': 2, 'mei': 4, 'juni': 5, 'juli': 6, 'augustus': 7,
+            // French
+            'janvier': 0, 'février': 1, 'fevrier': 1, 'mars': 2, 'avril': 3, 'juin': 5, 'juillet': 6, 'août': 7, 'aout': 7, 'décembre': 11, 'decembre': 11,
+            // Spanish
+            'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4, 'junio': 5, 'julio': 6, 'agosto': 7, 'octubre': 9, 'diciembre': 11,
+            // German
+            'januar': 0, 'märz': 2, 'marz': 2, 'oktober': 9, 'dezember': 11,
+            // Italian
+            'gennaio': 0, 'febbraio': 1, 'aprile': 3, 'maggio': 4, 'giugno': 5, 'luglio': 6, 'settembre': 8, 'ottobre': 9, 'novembre': 10, 'dicembre': 11,
+            // Polish (both nominative and genitive commonly used in dates)
+            'styczeń': 0, 'stycznia': 0, 'luty': 1, 'lutego': 1, 'marzec': 2, 'marca': 2, 'kwiecień': 3, 'kwietnia': 3, 'maja': 4, 'czerwiec': 5, 'czerwca': 5, 'lipiec': 6, 'lipca': 6, 'sierpień': 7, 'sierpnia': 7, 'wrzesień': 8, 'września': 8, 'październik': 9, 'października': 9, 'listopada': 10, 'grudzień': 11, 'grudnia': 11
           };
 
           const s = dateStr.toLowerCase();
           const dayMatch = s.match(/\d+/);
-          const monthMatch = s.match(/[a-z]+/g) || [];
+          const monthMatch = s.match(/[a-zżźćńółęąś]+/gi) || [];
           
           let targetDate: Date | null = null;
 
@@ -289,8 +315,9 @@ async function startServer() {
             let monthIndex = -1;
             
             for (const monthName of monthMatch) {
-              if (nlMonthMap[monthName] !== undefined) {
-                monthIndex = nlMonthMap[monthName];
+              const cleanedMonth = monthName.toLowerCase();
+              if (euMonthMap[cleanedMonth] !== undefined) {
+                monthIndex = euMonthMap[cleanedMonth];
                 break;
               }
             }
@@ -304,9 +331,11 @@ async function startServer() {
             }
           }
 
-          if (!targetDate && /morgen|tomorrow/i.test(s)) {
+          if (!targetDate && /morgen|tomorrow|demain|mañana|manana|jutro|domani|imorgon|heute|today|vandaag|aujourd|hoy|dzisiaj|oggi|idag/i.test(s)) {
             targetDate = new Date();
-            targetDate.setDate(targetDate.getDate() + 1);
+            if (/morgen|tomorrow|demain|mañana|manana|jutro|domani|imorgon/i.test(s)) {
+              targetDate.setDate(targetDate.getDate() + 1);
+            }
           }
 
           if (targetDate) {
@@ -500,9 +529,23 @@ async function startServer() {
       
       console.log(`Starting Bol Audit for EAN: ${ean}`);
       
-      browser = await chromium.launch({ 
+      const proxyServer = process.env.PROXY_SERVER;
+      const proxyUsername = process.env.PROXY_USERNAME;
+      const proxyPassword = process.env.PROXY_PASSWORD;
+      
+      const launchOptions: any = {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
-      }).catch(err => {
+      };
+
+      if (proxyServer) {
+        launchOptions.proxy = {
+          server: proxyServer,
+          username: proxyUsername || undefined,
+          password: proxyPassword || undefined,
+        };
+      }
+
+      browser = await chromium.launch(launchOptions).catch(err => {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
