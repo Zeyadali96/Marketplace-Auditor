@@ -252,9 +252,7 @@ async function startServer() {
         '#pfd-desktop-PRIMARY_DELIVERY_MESSAGE_LARGE',
         '#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE',
         '#fastest_delivery_message',
-        '#upsell-messaging',
         '#ddmDeliveryMessage',
-        '.a-spacing-base .a-text-bold',
         '#pba-delivery-message'
       ];
       
@@ -529,41 +527,19 @@ async function startServer() {
       
       console.log(`Starting Bol Audit for EAN: ${ean}`);
       
-      const proxyServer = process.env.PROXY_SERVER;
-      const proxyUsername = process.env.PROXY_USERNAME;
-      const proxyPassword = process.env.PROXY_PASSWORD;
-      
-      const launchOptions: any = {
+      browser = await chromium.launch({ 
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
-      };
-
-      if (proxyServer) {
-        launchOptions.proxy = {
-          server: proxyServer,
-          username: proxyUsername || undefined,
-          password: proxyPassword || undefined,
-        };
-      }
-
-      browser = await chromium.launch(launchOptions).catch(err => {
+      }).catch(err => {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
         extraHTTPHeaders: {
-            'Accept-Language': 'en-US,en;q=0.9,nl;q=0.8',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Referer': 'https://www.google.com/'
+          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+          'Referer': 'https://www.google.com/'
         }
       });
 
@@ -582,7 +558,7 @@ async function startServer() {
       // Navigate to search results
       console.log(`Navigating to: ${searchUrl}`);
       try {
-        await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 45000 });
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
       } catch (e: any) {
         if (e.name === 'TimeoutError') {
           console.warn("Bol search navigation timed out, attempting to proceed...");
@@ -601,12 +577,11 @@ async function startServer() {
                text.includes('To discuss automated access to Amazon data please contact') ||
                text.includes('Ben je een robot?') ||
                text.includes('rustig aan speed racer') ||
-               text.includes('Je gaat iets te snel') ||
-               text.includes('is geblokkeerd');
+               text.includes('Je gaat iets te snel');
       });
 
       if (isBlocked) {
-        throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system. Running on cloud providers like Railway requires a residential proxy.");
+        throw new Error("Bol.com blocked the request (Rate limited / Speed Racer detected). Please wait a few minutes.");
       }
 
       // Check if we are on a search page or product page
@@ -1067,6 +1042,19 @@ async function startServer() {
       ? "A+ content available" 
       : getMatchText(auditResult.description.match);
 
+    const marketplaceToLang: Record<string, string> = {
+      'amazon.de': 'DE',
+      'amazon.nl': 'NL',
+      'amazon.fr': 'FR',
+      'amazon.es': 'ES',
+      'amazon.it': 'IT',
+      'amazon.se': 'SE',
+      'amazon.co.uk': 'UK',
+      'amazon.com.be': 'BE'
+    };
+    const langCode = mode === 'amazon' ? (marketplaceToLang[marketplace] || '') : 'NL';
+    const suffix = langCode ? ` ${langCode}` : '';
+
     const sharedData: any = {
       "Identifier": identifier,
       "SKU": identifier,
@@ -1091,6 +1079,9 @@ async function startServer() {
       "Shipping": auditResult.shipping.live || "N/A",
       "Delivery Days": auditResult.shipping.live || "N/A",
       "Price": auditResult.price.live || "N/A",
+      [`Price${suffix}`]: auditResult.price.live || "N/A",
+      [`Shipping Time${suffix}`]: auditResult.shipping.live || "N/A",
+      [`Shipping${suffix}`]: auditResult.shipping.live || "N/A",
       "Variation": getVariationText(auditResult.variations.live),
       "Variations": getVariationText(auditResult.variations.live),
       "Variation Match": getVariationText(auditResult.variations.live),
