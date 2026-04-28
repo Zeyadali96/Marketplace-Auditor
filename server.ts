@@ -583,7 +583,7 @@ async function startServer() {
       let productUrl = searchUrl;
       console.log(`Navigating to: ${searchUrl}`);
       try {
-        await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 45000 });
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       } catch (e: any) {
         if (e.name === 'TimeoutError') {
           console.warn("Bol search navigation timed out, attempting to proceed...");
@@ -628,7 +628,7 @@ async function startServer() {
           productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
           console.log(`Navigating to product URL: ${productUrl}`);
           try {
-            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
           } catch (e: any) {
             if (e.name === 'TimeoutError') {
               console.warn("Bol product navigation timed out, attempting to proceed...");
@@ -651,7 +651,7 @@ async function startServer() {
             productUrl = anyProductLink.startsWith('http') ? anyProductLink : `https://www.bol.com${anyProductLink}`;
             console.log(`Fallback: Navigating to product URL: ${productUrl}`);
             try {
-              await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+              await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
             } catch (e: any) {
               if (e.name === 'TimeoutError') {
                 console.warn("Bol fallback product navigation timed out, attempting to proceed...");
@@ -667,21 +667,18 @@ async function startServer() {
       }
 
       // Ensure we are on a product page
-      await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot', { timeout: 30000 }).catch(() => {
+      await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot', { timeout: 20000 }).catch(() => {
         console.warn("Product indicators not found, page might be slow or not a product page.");
       });
       
       // Update productUrl to final redirected URL
       productUrl = page.url();
 
-      // Wait for network idle to ensure hydration
-      await page.waitForLoadState('load', { timeout: 15000 }).catch(() => null);
-      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {
-        console.warn("Network idle timeout, proceeding with current state.");
-      });
+      // Faster hydration wait
+      await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
 
-      // Extra wait for dynamic content (variations, etc.)
-      await page.waitForTimeout(3000);
+      // Reduced extra wait for dynamic content (variations, etc.)
+      await page.waitForTimeout(1000);
 
       // Scroll to media container to trigger lazy loading
       await page.evaluate(() => {
@@ -694,10 +691,10 @@ async function startServer() {
           window.scrollBy(0, 300);
         }
       });
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(1000);
 
       // Wait for media container specifically
-      await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 10000 }).catch(() => null);
+      await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 5000 }).catch(() => null);
 
       const liveDataRaw = await page.evaluate(function() {
         // @ts-ignore
