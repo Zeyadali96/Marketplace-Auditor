@@ -95,13 +95,26 @@ async function startServer() {
         console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Browser launch failed. If you see "libglib" errors, ensure system dependencies are installed. On Railway, the provided nixpacks.toml should fix this. Error: ${err.message}`);
       });
+
+      // Randomized User-Agent
+      const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+      ];
+      const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        userAgent: randomUA,
         viewport: { width: 1920, height: 1080 },
         extraHTTPHeaders: {
           'Accept-Language': 'en-GB,en;q=0.9',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
           'DNT': '1',
-          'Upgrade-Insecure-Requests': '1'
+          'Upgrade-Insecure-Requests': '1',
+          'Sec-Ch-Ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+          'Sec-Ch-Ua-Mobile': '?0',
+          'Sec-Ch-Ua-Platform': '"Windows"'
         }
       });
 
@@ -134,11 +147,11 @@ async function startServer() {
       await context.addCookies(cookies);
       const page = await context.newPage();
       
-      // Optimize loading by blocking unnecessary resources
-      await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css}', (route) => {
-        const url = route.request().url();
-        // Allow main product images if needed, but for scraping HTML we usually don't need them
-        // However, we extract image URLs from the script tags or landingImage src, so we don't need the actual image files to load.
+      // Navigate with random delay
+      await page.waitForTimeout(Math.floor(Math.random() * 2000) + 500);
+
+      // Optimize loading by blocking image/font resources but keep CSS
+      await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (route) => {
         route.abort();
       });
 
@@ -574,12 +587,25 @@ async function startServer() {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
+
+      // Randomized User-Agent
+      const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0'
+      ];
+      const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        userAgent: randomUA,
         viewport: { width: 1920, height: 1080 },
         extraHTTPHeaders: {
           'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Referer': 'https://www.google.com/'
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          'Sec-Ch-Ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+          'Sec-Ch-Ua-Mobile': '?0',
+          'Sec-Ch-Ua-Platform': '"Windows"',
+          'Upgrade-Insecure-Requests': '1'
         }
       });
 
@@ -595,14 +621,8 @@ async function startServer() {
 
       const page = await context.newPage();
       
-      // Optimized loading: Block most resources to speed up and reduce footprint
-      await page.route('**/*', (route) => {
-        const type = route.request().resourceType();
-        if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
-          return route.abort();
-        }
-        route.continue();
-      });
+      // Navigate with random delay
+      await page.waitForTimeout(Math.floor(Math.random() * 2000) + 500);
 
       // Navigate to search results
       let productUrl = searchUrl;
@@ -617,10 +637,9 @@ async function startServer() {
         }
       }
       
-      // Block Detection for Bol
       const bolBlockReason = await page.evaluate(() => {
         const text = document.body.innerText;
-        if (text.includes('IP address') && text.includes('is blocked')) return "IP Blocked";
+        if ((text.includes('IP address') || text.includes('IP adres')) && (text.includes('is blocked') || text.includes('is geblokkeerd'))) return "IP Blocked";
         if (text.includes('Access Denied') || text.includes('Toegang geweigerd')) return "Access Denied";
         if (text.includes('distil_identify_cookie')) return "Bot Protection";
         return null;
