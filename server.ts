@@ -17,14 +17,17 @@ chromium.use(stealth());
 async function startServer() {
   const app = express();
   // AI Studio strictly requires 3000, but other platforms use process.env.PORT.
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = parseInt(process.env.PORT || "3000", 10);
+
+  // Health check routes for Cloud Run / Railway
+  app.get('/health', (req, res) => res.send('OK'));
+  app.get('/api/health', (req, res) => res.send('OK'));
+  
+  // Explicit root health check that won't be shadowed by Vite if it's just a simple GET
+  app.get('/ping', (req, res) => res.send('pong'));
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
-
-  // Health check routes for Railway
-  app.get('/health', (req, res) => res.send('OK'));
-  app.get('/api/health', (req, res) => res.send('OK'));
 
   // API Routes
   
