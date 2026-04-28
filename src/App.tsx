@@ -26,6 +26,28 @@ import { motion, AnimatePresence } from 'motion/react';
 
 type AuditMode = 'amazon' | 'bol';
 
+// Helper function for scoring
+const calculateScore = (auditResult: any, mode: string) => {
+  if (!auditResult) return 0;
+  
+  let score = 0;
+  if (mode === 'amazon') {
+    // Total 100: Title(30), Description/A+(30), Bullets(40)
+    if (auditResult.title?.match) score += 30;
+    if (auditResult.description?.match || auditResult.description?.isAPlus) score += 30;
+    if (auditResult.bullets && Array.isArray(auditResult.bullets)) {
+      const matchCount = auditResult.bullets.filter((b: any) => b.match).length;
+      // 5 bullets * 8 = 40
+      score += Math.min(matchCount * 8, 40);
+    }
+  } else {
+    // Total 100: Title(50), Description(50)
+    if (auditResult.title?.match) score += 50;
+    if (auditResult.description?.match) score += 50;
+  }
+  return score;
+};
+
 export default function App() {
   const [sheetId, setSheetId] = useState('1V4lNf30SlBwczSvGX9rfn5eWFH2AvMO4TqMHAHalS7s');
   const [sheetName, setSheetName] = useState('Amazon Data');
@@ -162,17 +184,19 @@ export default function App() {
 
   const exportResults = () => {
     const csvRows = [];
-    const headers = ['Row', 'Identifier', 'Title Match', 'Description Match', 'Bullet Match %', 'Price', 'Shipping'];
+    const headers = ['Row', 'Identifier', 'Score', 'Title Match', 'Description Match', 'Bullet Match %', 'Price', 'Shipping'];
     csvRows.push(headers.join(','));
 
     Object.entries(auditResults).forEach(([idx, res]: any) => {
       const row = data[parseInt(idx)];
       const id = mode === 'amazon' ? row.ASIN : row.EAN;
-      const bulletMatch = res.auditResult.bullets.filter((b: any) => b.match).length / (res.auditResult.bullets.length || 1);
+      const bulletMatch = res.auditResult.bullets ? (res.auditResult.bullets.filter((b: any) => b.match).length / (res.auditResult.bullets.length || 1)) : 0;
+      const score = calculateScore(res.auditResult, mode);
       
       const line = [
         parseInt(idx) + 1,
         id,
+        score,
         res.auditResult.title.match ? 'YES' : 'NO',
         res.auditResult.description.match ? 'YES' : 'NO',
         Math.round(bulletMatch * 100) + '%',
@@ -236,7 +260,7 @@ export default function App() {
       price: getVal(row, 'Price', 'price'),
       shipping: getVal(row, 'Shipping', 'shipping', 'Shipping Time', `Shipping ${langCode}`, `Shipping Time ${langCode}`),
       variations: getVal(row, 'Variations', 'variations') === 'Yes' || getVal(row, 'Variations', 'variations') === true || getVal(row, 'Variations', 'variations') === 'TRUE',
-      hasAPlus: getVal(row, 'APlus', 'aplus', 'A+ Content') === 'Yes' || getVal(row, 'APlus', 'aplus', 'A+ Content') === true || getVal(row, 'APlus', 'aplus', 'A+ Content') === 'TRUE'
+      hasAPlus: mode === 'amazon' && (getVal(row, 'APlus', 'aplus', 'A+ Content') === 'Yes' || getVal(row, 'APlus', 'aplus', 'A+ Content') === true || getVal(row, 'APlus', 'aplus', 'A+ Content') === 'TRUE')
     };
 
     setAuditing(rowIndex.toString());
@@ -485,7 +509,7 @@ export default function App() {
                                     <div key={i} className="relative group">
                                       <img 
                                         src={getProxiedUrl(img)} 
-                                        className={`w-10 h-10 min-w-[40px] object-contain bg-white rounded border ${i === 0 && !auditResults[idx].auditResult.images.match ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`} 
+                                        className="w-10 h-10 min-w-[40px] object-contain bg-white rounded border border-slate-200 hover:border-indigo-400 transition-colors" 
                                         alt=""
                                         referrerPolicy="no-referrer"
                                       />
@@ -510,15 +534,9 @@ export default function App() {
                                 </div>
                               )}
                               <div className="flex items-center justify-center gap-1">
-                                {Object.values(auditResults[idx].auditResult).every((v: any) => v.match || (v.similarity && v.similarity > 0.9)) ? (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                                    <CheckCircle2 className="w-3 h-3" /> Pass
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
-                                    <XCircle className="w-3 h-3" /> Issues
-                                  </span>
-                                )}
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${calculateScore(auditResults[idx].auditResult, mode) === 100 ? 'bg-green-50 text-green-700 border-green-200' : calculateScore(auditResults[idx].auditResult, mode) >= 50 ? 'bg-yellow-50 text-yellow-700 border-yellow-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                                  Score: {calculateScore(auditResults[idx].auditResult, mode)} / 100
+                                </span>
                               </div>
                             </div>
                           ) : (
@@ -641,12 +659,14 @@ export default function App() {
                                           <span className="text-xs text-slate-400">({auditResults[idx].liveData.variations} found)</span>
                                         </div>
                                       </div>
-                                      <div className="p-4 bg-white rounded-xl border border-slate-200">
-                                        <div className="text-xs text-slate-400 mb-1">A+ Content</div>
-                                        <div className={`text-sm font-bold ${auditResults[idx].liveData.hasAPlus ? 'text-green-600' : 'text-slate-400'}`}>
-                                          {auditResults[idx].liveData.hasAPlus ? 'PRESENT' : 'MISSING'}
+                                      {mode === 'amazon' && (
+                                        <div className="p-4 bg-white rounded-xl border border-slate-200">
+                                          <div className="text-xs text-slate-400 mb-1">A+ Content</div>
+                                          <div className={`text-sm font-bold ${auditResults[idx].liveData.hasAPlus ? 'text-green-600' : 'text-slate-400'}`}>
+                                            {auditResults[idx].liveData.hasAPlus ? 'PRESENT' : 'MISSING'}
+                                          </div>
                                         </div>
-                                      </div>
+                                      )}
                                     </div>
 
                                     <div className="space-y-4">
