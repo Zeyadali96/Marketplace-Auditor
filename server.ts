@@ -148,24 +148,25 @@ async function startServer() {
           throw e;
         }
       }
+
+      // Check for block/captcha early
+      const blockReason = await page.evaluate(() => {
+        const text = document.body.innerText;
+        if (text.includes('IP address') && text.includes('is blocked')) return "IP Blocked";
+        if (text.includes('Robot Check') || text.includes('Type the characters you see in this image')) return "CAPTCHA";
+        if (text.includes('Access Denied') || text.includes('To discuss automated access to Amazon data')) return "Access Denied";
+        if (document.title.includes('Sorry! Something went wrong!')) return "Technical Error";
+        return null;
+      });
+
+      if (blockReason) {
+        throw new Error(`Amazon blocked the request: ${blockReason}. Please try again later or configure a residential proxy.`);
+      }
       
       // Ensure the product title is at least present
       await page.waitForSelector('#productTitle', { timeout: 15000 }).catch(() => {
         console.warn("Product title not found within 15s, page might be slow or blocked.");
       });
-      
-      // Check for CAPTCHA
-      const isCaptcha = await page.evaluate(function() {
-        // @ts-ignore
-        if (typeof __name === 'undefined') { (window as any).__name = (t: any, v: any) => t; }
-        return document.title.includes('Robot Check') || 
-               document.body.innerText.includes('Type the characters you see in this image') ||
-               document.body.innerText.includes('To discuss automated access to Amazon data please contact');
-      });
-      
-      if (isCaptcha) {
-        throw new Error("Amazon blocked the request with a CAPTCHA. Please try again later.");
-      }
 
       // Wait a bit more for dynamic elements (variations, etc.)
       await page.waitForTimeout(3000);
@@ -253,7 +254,12 @@ async function startServer() {
         '#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE',
         '#fastest_delivery_message',
         '#ddmDeliveryMessage',
-        '#pba-delivery-message'
+        '#pba-delivery-message',
+        '#exports_desktop_qualifiedBuybox_delivery_message',
+        '#delivery-message',
+        '.delivery-message',
+        '#contextFreeCheckpoint_feature_div',
+        '#amazonGlobal_feature_div'
       ];
       
       let rawShippingTime = "";
@@ -373,6 +379,9 @@ async function startServer() {
         priceDisplay = $('#price_inside_buybox').text().trim() || 
                        $('#priceblock_ourprice').text().trim() ||
                        $('#priceblock_dealprice').text().trim() ||
+                       $('.a-price.priceToPay span.a-offscreen').first().text().trim() ||
+                       $('#kindle-price').text().trim() ||
+                       $('#unqualifiedBuyBox .a-color-price').first().text().trim() ||
                        $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || "N/A";
       }
 
@@ -583,7 +592,18 @@ async function startServer() {
         }
       }
       
-      // Removed isBlocked check
+      // Block Detection for Bol
+      const bolBlockReason = await page.evaluate(() => {
+        const text = document.body.innerText;
+        if (text.includes('IP address') && text.includes('is blocked')) return "IP Blocked";
+        if (text.includes('Access Denied') || text.includes('Toegang geweigerd')) return "Access Denied";
+        if (text.includes('distil_identify_cookie')) return "Bot Protection";
+        return null;
+      });
+
+      if (bolBlockReason) {
+        throw new Error(`Bol.com blocked the request: ${bolBlockReason}. Please configure a residential proxy.`);
+      }
 
       // Check if we are on a search page or product page
       let pageTitle = await page.title();
