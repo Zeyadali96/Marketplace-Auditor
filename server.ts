@@ -17,7 +17,7 @@ chromium.use(stealth());
 async function startServer() {
   const app = express();
   // AI Studio strictly requires 3000, but other platforms use process.env.PORT.
-  const PORT = parseInt(process.env.PORT || "3000");
+  const PORT = 3000;
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
@@ -96,20 +96,8 @@ async function startServer() {
         throw new Error(`Browser launch failed. If you see "libglib" errors, ensure system dependencies are installed. On Railway, the provided nixpacks.toml should fix this. Error: ${err.message}`);
       });
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 },
-        extraHTTPHeaders: {
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'DNT': '1',
-          'Upgrade-Insecure-Requests': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Sec-Fetch-User': '?1'
-        },
-        ignoreHTTPSErrors: true
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 }
       });
 
       // Set regional postcodes and language preferences
@@ -575,20 +563,8 @@ async function startServer() {
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 },
-        extraHTTPHeaders: {
-          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'DNT': '1',
-          'Upgrade-Insecure-Requests': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Sec-Fetch-User': '?1'
-        },
-        ignoreHTTPSErrors: true
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 }
       });
 
       // Set cookies for language and country
@@ -626,9 +602,7 @@ async function startServer() {
       });
 
       if (bolBlockReason) {
-        console.warn(`Bol.com block detected: ${bolBlockReason}. Scraper may fail.`);
-        // Try a small wait if blocked to see if we can still find content
-        await page.waitForTimeout(2000);
+        throw new Error(`Bol.com blocked the request: ${bolBlockReason}. Please configure a residential proxy.`);
       }
 
       // Check if we are on a search page or product page
@@ -654,7 +628,7 @@ async function startServer() {
           productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
           console.log(`Navigating to product URL: ${productUrl}`);
           try {
-            await page.goto(productUrl, { waitUntil: 'networkidle', timeout: 45000 });
+            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
           } catch (e: any) {
             if (e.name === 'TimeoutError') {
               console.warn("Bol product navigation timed out, attempting to proceed...");
@@ -677,7 +651,7 @@ async function startServer() {
             productUrl = anyProductLink.startsWith('http') ? anyProductLink : `https://www.bol.com${anyProductLink}`;
             console.log(`Fallback: Navigating to product URL: ${productUrl}`);
             try {
-              await page.goto(productUrl, { waitUntil: 'networkidle', timeout: 45000 });
+              await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
             } catch (e: any) {
               if (e.name === 'TimeoutError') {
                 console.warn("Bol fallback product navigation timed out, attempting to proceed...");
@@ -700,9 +674,11 @@ async function startServer() {
       // Update productUrl to final redirected URL
       productUrl = page.url();
 
-      // Ensure hydration
+      // Wait for network idle to ensure hydration
       await page.waitForLoadState('load', { timeout: 15000 }).catch(() => null);
-      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => null);
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {
+        console.warn("Network idle timeout, proceeding with current state.");
+      });
 
       // Extra wait for dynamic content (variations, etc.)
       await page.waitForTimeout(3000);

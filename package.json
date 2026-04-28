@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npm run install-browsers && tsx server.ts",
     "build": "vite build",
-    "start": "tsx server.ts",
+    "start": "node server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
