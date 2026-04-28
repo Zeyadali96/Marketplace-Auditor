@@ -1,5 +1,4 @@
 import express from "express";
-console.log("STARTING SERVER PROCESS...");
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import cors from "cors";
@@ -17,18 +16,15 @@ chromium.use(stealth());
 
 async function startServer() {
   const app = express();
-  // AI Studio strictly requires 3000.
-  const PORT = 3000;
-
-  // Health check routes for Cloud Run / Railway
-  app.get('/health', (req, res) => res.send('OK'));
-  app.get('/api/health', (req, res) => res.send('OK'));
-  
-  // Explicit root health check that won't be shadowed by Vite if it's just a simple GET
-  app.get('/ping', (req, res) => res.send('pong'));
+  // AI Studio strictly requires 3000, but other platforms use process.env.PORT.
+  const PORT = parseInt(process.env.PORT || "3000");
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
+
+  // Health check routes for Railway
+  app.get('/health', (req, res) => res.send('OK'));
+  app.get('/api/health', (req, res) => res.send('OK'));
 
   // API Routes
   
@@ -294,25 +290,33 @@ async function startServer() {
           const today = new Date();
           const currentYear = today.getFullYear();
           
+          let dateStr = rawShippingTime;
+          // Handle ranges by taking the first date
+          if (dateStr.includes('-')) {
+            dateStr = dateStr.split('-')[0].trim();
+          }
+          
           // Comprehensive month mapping for EU Amazon marketplaces
           const euMonthMap: Record<string, number> = {
             // English
             'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5, 'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
-            // Dutch, German, Swedish, Germanic variants
-            'januari': 0, 'februari': 1, 'maart': 2, 'mars': 2, 'märz': 2, 'marz': 2, 'januar': 0, 'mai': 4, 'mei': 4, 'maj': 4, 'juni': 5, 'juli': 6, 'augustus': 7, 'augusti': 7, 'oktober': 9, 'dezember': 11,
+            // Dutch & generic Germanic
+            'januari': 0, 'februari': 1, 'maart': 2, 'mei': 4, 'juni': 5, 'juli': 6, 'augustus': 7,
             // French
-            'janvier': 0, 'février': 1, 'fevrier': 1, 'avril': 3, 'juin': 5, 'juillet': 6, 'août': 7, 'aout': 7, 'décembre': 11, 'decembre': 11,
+            'janvier': 0, 'février': 1, 'fevrier': 1, 'mars': 2, 'avril': 3, 'juin': 5, 'juillet': 6, 'août': 7, 'aout': 7, 'décembre': 11, 'decembre': 11,
             // Spanish
             'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4, 'junio': 5, 'julio': 6, 'agosto': 7, 'octubre': 9, 'diciembre': 11,
+            // German
+            'januar': 0, 'märz': 2, 'marz': 2, 'oktober': 9, 'dezember': 11,
             // Italian
             'gennaio': 0, 'febbraio': 1, 'aprile': 3, 'maggio': 4, 'giugno': 5, 'luglio': 6, 'settembre': 8, 'ottobre': 9, 'novembre': 10, 'dicembre': 11,
-            // Polish
+            // Polish (both nominative and genitive commonly used in dates)
             'styczeń': 0, 'stycznia': 0, 'luty': 1, 'lutego': 1, 'marzec': 2, 'marca': 2, 'kwiecień': 3, 'kwietnia': 3, 'maja': 4, 'czerwiec': 5, 'czerwca': 5, 'lipiec': 6, 'lipca': 6, 'sierpień': 7, 'sierpnia': 7, 'wrzesień': 8, 'września': 8, 'październik': 9, 'października': 9, 'listopada': 10, 'grudzień': 11, 'grudnia': 11
           };
 
-          const s = rawShippingTime.toLowerCase();
+          const s = dateStr.toLowerCase();
           const dayMatch = s.match(/\d+/);
-          const monthMatch = s.match(/[a-zżźćńółęąśåäö]+/gi) || [];
+          const monthMatch = s.match(/[a-zżźćńółęąś]+/gi) || [];
           
           let targetDate: Date | null = null;
 
@@ -320,7 +324,6 @@ async function startServer() {
             const day = parseInt(dayMatch[0]);
             let monthIndex = -1;
             
-            // Search for month in all words found in the string
             for (const monthName of monthMatch) {
               const cleanedMonth = monthName.toLowerCase();
               if (euMonthMap[cleanedMonth] !== undefined) {
@@ -331,13 +334,9 @@ async function startServer() {
 
             if (monthIndex !== -1) {
               targetDate = new Date(currentYear, monthIndex, day);
-              // If the date is in the past, it's likely for the next year (e.g. searching in Dec for Jan delivery)
-              if (targetDate.getMonth() < today.getMonth() && monthIndex < today.getMonth()) {
-                targetDate.setFullYear(currentYear + 1);
-              }
             } else {
-              // Try standard parsing as fallback
-              const parsed = new Date(rawShippingTime + ` ${currentYear}`);
+              // Try standard parsing
+              const parsed = new Date(dateStr + ` ${currentYear}`);
               if (!isNaN(parsed.getTime())) targetDate = parsed;
             }
           }
@@ -563,7 +562,6 @@ async function startServer() {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
-
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 }
