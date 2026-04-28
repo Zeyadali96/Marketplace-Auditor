@@ -300,23 +300,22 @@ async function startServer() {
           const euMonthMap: Record<string, number> = {
             // English
             'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5, 'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
-            // Dutch & generic Germanic
-            'januari': 0, 'februari': 1, 'maart': 2, 'mei': 4, 'juni': 5, 'juli': 6, 'augustus': 7,
+            // Dutch, German, Swedish, Germanic variants
+            'januari': 0, 'februari': 1, 'maart': 2, 'mars': 2, 'märz': 2, 'marz': 2, 'januar': 0, 'mai': 4, 'mei': 4, 'maj': 4, 'juni': 5, 'juli': 6, 'augustus': 7, 'augusti': 7, 'oktober': 9, 'dezember': 11,
             // French
-            'janvier': 0, 'février': 1, 'fevrier': 1, 'mars': 2, 'avril': 3, 'juin': 5, 'juillet': 6, 'août': 7, 'aout': 7, 'décembre': 11, 'decembre': 11,
+            'janvier': 0, 'février': 1, 'fevrier': 1, 'avril': 3, 'juin': 5, 'juillet': 6, 'août': 7, 'aout': 7, 'décembre': 11, 'decembre': 11,
             // Spanish
             'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4, 'junio': 5, 'julio': 6, 'agosto': 7, 'octubre': 9, 'diciembre': 11,
-            // German
-            'januar': 0, 'märz': 2, 'marz': 2, 'oktober': 9, 'dezember': 11,
             // Italian
             'gennaio': 0, 'febbraio': 1, 'aprile': 3, 'maggio': 4, 'giugno': 5, 'luglio': 6, 'settembre': 8, 'ottobre': 9, 'novembre': 10, 'dicembre': 11,
-            // Polish (both nominative and genitive commonly used in dates)
+            // Polish
             'styczeń': 0, 'stycznia': 0, 'luty': 1, 'lutego': 1, 'marzec': 2, 'marca': 2, 'kwiecień': 3, 'kwietnia': 3, 'maja': 4, 'czerwiec': 5, 'czerwca': 5, 'lipiec': 6, 'lipca': 6, 'sierpień': 7, 'sierpnia': 7, 'wrzesień': 8, 'września': 8, 'październik': 9, 'października': 9, 'listopada': 10, 'grudzień': 11, 'grudnia': 11
           };
 
           const s = dateStr.toLowerCase();
+          const fullS = rawShippingTime.toLowerCase();
           const dayMatch = s.match(/\d+/);
-          const monthMatch = s.match(/[a-zżźćńółęąś]+/gi) || [];
+          const monthMatch = s.match(/[a-zżźćńółęąśåäö]+/gi) || [];
           
           let targetDate: Date | null = null;
 
@@ -324,11 +323,24 @@ async function startServer() {
             const day = parseInt(dayMatch[0]);
             let monthIndex = -1;
             
+            // Search in currently split string first
             for (const monthName of monthMatch) {
               const cleanedMonth = monthName.toLowerCase();
               if (euMonthMap[cleanedMonth] !== undefined) {
                 monthIndex = euMonthMap[cleanedMonth];
                 break;
+              }
+            }
+
+            // If not found in split string, search in the whole raw string (handles "2 - 5 May")
+            if (monthIndex === -1) {
+              const fullMonthMatch = fullS.match(/[a-zżźćńółęąśåäö]+/gi) || [];
+              for (const monthName of fullMonthMatch) {
+                const cleanedMonth = monthName.toLowerCase();
+                if (euMonthMap[cleanedMonth] !== undefined) {
+                  monthIndex = euMonthMap[cleanedMonth];
+                  break;
+                }
               }
             }
 
@@ -562,9 +574,30 @@ async function startServer() {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
+
+      const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+      ];
+      const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+
       const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 }
+        userAgent: randomUA,
+        viewport: { width: 1920, height: 1080 },
+        extraHTTPHeaders: {
+          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Windows"',
+          'sec-fetch-dest': 'document',
+          'sec-fetch-mode': 'navigate',
+          'sec-fetch-site': 'none',
+          'sec-fetch-user': '?1',
+          'upgrade-insecure-requests': '1'
+        }
       });
 
       // Set cookies for language and country
