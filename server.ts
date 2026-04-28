@@ -16,8 +16,8 @@ chromium.use(stealth());
 
 async function startServer() {
   const app = express();
-  // AI Studio strictly requires 3000.
-  const PORT = 3000;
+  // AI Studio strictly requires 3000, but other platforms use process.env.PORT.
+  const PORT = parseInt(process.env.PORT || "3000");
 
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
@@ -571,6 +571,7 @@ async function startServer() {
       const page = await context.newPage();
       
       // Navigate to search results
+      let productUrl = searchUrl;
       console.log(`Navigating to: ${searchUrl}`);
       try {
         await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 45000 });
@@ -604,7 +605,7 @@ async function startServer() {
         const firstProductLink = await page.getAttribute(firstProductSelector, 'href').catch(() => null);
         
         if (firstProductLink) {
-          const productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
+          productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
           console.log(`Navigating to product URL: ${productUrl}`);
           try {
             await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -627,7 +628,7 @@ async function startServer() {
           });
           
           if (anyProductLink) {
-            const productUrl = anyProductLink.startsWith('http') ? anyProductLink : `https://www.bol.com${anyProductLink}`;
+            productUrl = anyProductLink.startsWith('http') ? anyProductLink : `https://www.bol.com${anyProductLink}`;
             console.log(`Fallback: Navigating to product URL: ${productUrl}`);
             try {
               await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -640,12 +641,18 @@ async function startServer() {
             }
           }
         }
+      } else {
+        // If it's already a product page, capture the current URL
+        productUrl = page.url();
       }
 
       // Ensure we are on a product page
       await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot', { timeout: 30000 }).catch(() => {
         console.warn("Product indicators not found, page might be slow or not a product page.");
       });
+      
+      // Update productUrl to final redirected URL
+      productUrl = page.url();
 
       // Wait for network idle to ensure hydration
       await page.waitForLoadState('load', { timeout: 15000 }).catch(() => null);
@@ -997,7 +1004,8 @@ async function startServer() {
         shipping: shippingDaysStr,
         rawShipping: liveDataRaw.shipping || "N/A",
         variations: liveDataRaw.variations,
-        images: liveDataRaw.images && liveDataRaw.images.length > 0 ? getUniqueImages(liveDataRaw.images, 'bol') : []
+        images: liveDataRaw.images && liveDataRaw.images.length > 0 ? getUniqueImages(liveDataRaw.images, 'bol') : [],
+        url: productUrl
       };
 
       const auditResult = await performAudit(masterData, liveData, 'bol');

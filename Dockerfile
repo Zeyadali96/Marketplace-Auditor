@@ -7,5 +7,5 @@ RUN npm run build
 # Railway dynamically assigns a port; we must be ready for it
 ENV NODE_ENV=production
 ENV IS_RAILWAY=true
-EXPOSE 8080
+EXPOSE 3000
 CMD ["npm", "start"]

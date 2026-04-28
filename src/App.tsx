@@ -233,10 +233,10 @@ export default function App() {
 
     const masterData = {
       title: mode === 'bol' 
-        ? getVal(row, 'Bol Title', 'Title NL', 'title nl', 'Title', 'Product Name', 'Master Title')
+        ? getVal(row, 'Bol Title', 'Bol Product Name', 'Product Name NL', 'Product Name', 'Title NL', 'title nl', 'Title', 'Master Title')
         : getVal(row, 'Amazon Title', `AMZ title${suffix}`, `Title${suffix}`, `Amazon Title ${langCode}`),
       description: mode === 'bol'
-        ? getVal(row, 'Bol Description', 'Body NL', 'body nl', 'Description', 'Product Description', 'Master Description')
+        ? getVal(row, 'Bol Description', 'Bol Body', 'Bol Content', 'Product Description NL', 'Body NL', 'body nl', 'Description', 'Product Description', 'Master Description', 'Description NL')
         : getVal(row, 'Amazon Description', `AMZ body${suffix}`, `Description${suffix}`, `Amazon Description ${langCode}`),
       bullets: [
         getVal(row, 'Bullet point 1', `Bullet point 1${suffix}`),
@@ -772,7 +772,7 @@ export default function App() {
 
                                     <div className="pt-4">
                                       <a 
-                                        href={mode === 'amazon' ? `https://www.${marketplace}/dp/${row.ASIN}` : `https://www.bol.com/nl/nl/s/?searchtext=${row.EAN}`}
+                                        href={mode === 'amazon' ? `https://www.${marketplace}/dp/${row.ASIN}` : (auditResults[idx]?.liveData?.url || `https://www.bol.com/nl/nl/s/?searchtext=${row.EAN}`)}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         className="inline-flex items-center gap-2 text-sm text-indigo-600 font-medium hover:underline"
