@@ -1,4 +1,5 @@
 import express from "express";
+console.log("STARTING SERVER PROCESS...");
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import cors from "cors";
@@ -16,8 +17,8 @@ chromium.use(stealth());
 
 async function startServer() {
   const app = express();
-  // AI Studio strictly requires 3000, but other platforms use process.env.PORT.
-  const PORT = parseInt(process.env.PORT || "3000", 10);
+  // AI Studio strictly requires 3000.
+  const PORT = 3000;
 
   // Health check routes for Cloud Run / Railway
   app.get('/health', (req, res) => res.send('OK'));
