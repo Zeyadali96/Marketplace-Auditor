@@ -293,12 +293,6 @@ async function startServer() {
           const today = new Date();
           const currentYear = today.getFullYear();
           
-          let dateStr = rawShippingTime;
-          // Handle ranges by taking the first date
-          if (dateStr.includes('-')) {
-            dateStr = dateStr.split('-')[0].trim();
-          }
-          
           // Comprehensive month mapping for EU Amazon marketplaces
           const euMonthMap: Record<string, number> = {
             // English
@@ -315,8 +309,7 @@ async function startServer() {
             'styczeń': 0, 'stycznia': 0, 'luty': 1, 'lutego': 1, 'marzec': 2, 'marca': 2, 'kwiecień': 3, 'kwietnia': 3, 'maja': 4, 'czerwiec': 5, 'czerwca': 5, 'lipiec': 6, 'lipca': 6, 'sierpień': 7, 'sierpnia': 7, 'wrzesień': 8, 'września': 8, 'październik': 9, 'października': 9, 'listopada': 10, 'grudzień': 11, 'grudnia': 11
           };
 
-          const s = dateStr.toLowerCase();
-          const fullS = rawShippingTime.toLowerCase();
+          const s = rawShippingTime.toLowerCase();
           const dayMatch = s.match(/\d+/);
           const monthMatch = s.match(/[a-zżźćńółęąśåäö]+/gi) || [];
           
@@ -326,7 +319,7 @@ async function startServer() {
             const day = parseInt(dayMatch[0]);
             let monthIndex = -1;
             
-            // Search in currently split string first
+            // Search for month in all words found in the string
             for (const monthName of monthMatch) {
               const cleanedMonth = monthName.toLowerCase();
               if (euMonthMap[cleanedMonth] !== undefined) {
@@ -335,23 +328,15 @@ async function startServer() {
               }
             }
 
-            // If not found in split string, search in the whole raw string (handles "2 - 5 May")
-            if (monthIndex === -1) {
-              const fullMonthMatch = fullS.match(/[a-zżźćńółęąśåäö]+/gi) || [];
-              for (const monthName of fullMonthMatch) {
-                const cleanedMonth = monthName.toLowerCase();
-                if (euMonthMap[cleanedMonth] !== undefined) {
-                  monthIndex = euMonthMap[cleanedMonth];
-                  break;
-                }
-              }
-            }
-
             if (monthIndex !== -1) {
               targetDate = new Date(currentYear, monthIndex, day);
+              // If the date is in the past, it's likely for the next year (e.g. searching in Dec for Jan delivery)
+              if (targetDate.getMonth() < today.getMonth() && monthIndex < today.getMonth()) {
+                targetDate.setFullYear(currentYear + 1);
+              }
             } else {
-              // Try standard parsing
-              const parsed = new Date(dateStr + ` ${currentYear}`);
+              // Try standard parsing as fallback
+              const parsed = new Date(rawShippingTime + ` ${currentYear}`);
               if (!isNaN(parsed.getTime())) targetDate = parsed;
             }
           }
@@ -578,29 +563,9 @@ async function startServer() {
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
 
-      const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
-      ];
-      const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-
       const context = await browser.newContext({
-        userAgent: randomUA,
-        viewport: { width: 1920, height: 1080 },
-        extraHTTPHeaders: {
-          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-          'sec-ch-ua-mobile': '?0',
-          'sec-ch-ua-platform': '"Windows"',
-          'sec-fetch-dest': 'document',
-          'sec-fetch-mode': 'navigate',
-          'sec-fetch-site': 'none',
-          'sec-fetch-user': '?1',
-          'upgrade-insecure-requests': '1'
-        }
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 }
       });
 
       // Set cookies for language and country
