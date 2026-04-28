@@ -505,20 +505,31 @@ async function startServer() {
         }
       }
 
-      // Amazon Bullet Points (Refined to prevent duplication and distortion)
+      // Amazon Bullet Points (Refined to prevent reviews and script bleed-in)
       const amazonBullets: string[] = [];
       const primaryBulletSelectors = [
         '#feature-bullets ul li span.a-list-item',
         '#featurebullets_feature_div ul li span.a-list-item',
         '[data-feature-name="featurebullets"] ul li span.a-list-item',
-        '#productFactsDesktopExpander ul li span.a-list-item',
-        '.a-unordered-list.a-vertical li span.a-list-item'
+        '#productFactsDesktopExpander ul li span.a-list-item'
       ];
 
       primaryBulletSelectors.forEach(s => {
         $(s).each((_, el) => {
-          const text = $(el).text().trim();
+          const $el = $(el);
+          // Ensure we aren't inside a reviews section
+          if ($el.closest('#customer-reviews, #reviews-medley-footer, #cm-cr-dp-review-header').length > 0) return;
+          
+          let text = $el.text().trim();
+          
+          // Scrub review patterns and scripts
           if (text.length > 2 && 
+              !text.includes('window.ue') &&
+              !text.includes('Reviewed in') &&
+              !text.includes('out of 5 stars') &&
+              !text.includes('Verified Purchase') &&
+              !text.includes('Helpful Report') &&
+              !text.includes('Read more') &&
               !text.includes('See more photos') && 
               !text.includes('Check details') && 
               !text.includes('See more') &&
