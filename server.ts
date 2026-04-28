@@ -95,27 +95,9 @@ async function startServer() {
         console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Browser launch failed. If you see "libglib" errors, ensure system dependencies are installed. On Railway, the provided nixpacks.toml should fix this. Error: ${err.message}`);
       });
-
-      // Randomized User-Agent
-      const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
-      ];
-      const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-
       const context = await browser.newContext({
-        userAgent: randomUA,
-        viewport: { width: 1920, height: 1080 },
-        extraHTTPHeaders: {
-          'Accept-Language': 'en-GB,en;q=0.9',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'DNT': '1',
-          'Upgrade-Insecure-Requests': '1',
-          'Sec-Ch-Ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-          'Sec-Ch-Ua-Mobile': '?0',
-          'Sec-Ch-Ua-Platform': '"Windows"'
-        }
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 }
       });
 
       // Set regional postcodes and language preferences
@@ -147,11 +129,11 @@ async function startServer() {
       await context.addCookies(cookies);
       const page = await context.newPage();
       
-      // Navigate with random delay
-      await page.waitForTimeout(Math.floor(Math.random() * 2000) + 500);
-
-      // Optimize loading by blocking image/font resources but keep CSS
-      await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (route) => {
+      // Optimize loading by blocking unnecessary resources
+      await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf,css}', (route) => {
+        const url = route.request().url();
+        // Allow main product images if needed, but for scraping HTML we usually don't need them
+        // However, we extract image URLs from the script tags or landingImage src, so we don't need the actual image files to load.
         route.abort();
       });
 
@@ -379,11 +361,11 @@ async function startServer() {
         }
       }
 
-      // 2. Price Extraction
+      // Price Extraction (Target: #corePriceDisplay_desktop_feature_div)
       let priceDisplay = "N/A";
       let listPrice = "N/A";
       
-      const corePriceDiv = $('#corePriceDisplay_desktop_feature_div, #apex_desktop_price_feature_div, #corePrice_desktop');
+      const corePriceDiv = $('#corePriceDisplay_desktop_feature_div, #apex_desktop_price_feature_div');
       if (corePriceDiv.length) {
         priceDisplay = corePriceDiv.find('span.a-offscreen').first().text().trim() || 
                        corePriceDiv.find('.a-price span.a-offscreen').first().text().trim();
@@ -398,16 +380,9 @@ async function startServer() {
                        $('#priceblock_ourprice').text().trim() ||
                        $('#priceblock_dealprice').text().trim() ||
                        $('.a-price.priceToPay span.a-offscreen').first().text().trim() ||
-                       $('.a-price.a-text-price span.a-offscreen').first().text().trim() ||
                        $('#kindle-price').text().trim() ||
                        $('#unqualifiedBuyBox .a-color-price').first().text().trim() ||
-                       $('.priceToPay').first().text().trim() ||
                        $('input[name="items[0.base][customerVisiblePrice][displayString]"]').val() as string || "N/A";
-      }
-
-      // Cleanup price string (handle cases where it captures other text)
-      if (priceDisplay !== "N/A") {
-        priceDisplay = priceDisplay.replace(/[^\d.,€$£]/g, ' ').trim().split(' ')[0];
       }
 
       const variationSelectors = [
@@ -505,31 +480,20 @@ async function startServer() {
         }
       }
 
-      // Amazon Bullet Points (Refined to prevent reviews and script bleed-in)
+      // Amazon Bullet Points (Refined to prevent duplication and distortion)
       const amazonBullets: string[] = [];
       const primaryBulletSelectors = [
         '#feature-bullets ul li span.a-list-item',
         '#featurebullets_feature_div ul li span.a-list-item',
         '[data-feature-name="featurebullets"] ul li span.a-list-item',
-        '#productFactsDesktopExpander ul li span.a-list-item'
+        '#productFactsDesktopExpander ul li span.a-list-item',
+        '.a-unordered-list.a-vertical li span.a-list-item'
       ];
 
       primaryBulletSelectors.forEach(s => {
         $(s).each((_, el) => {
-          const $el = $(el);
-          // Ensure we aren't inside a reviews section
-          if ($el.closest('#customer-reviews, #reviews-medley-footer, #cm-cr-dp-review-header').length > 0) return;
-          
-          let text = $el.text().trim();
-          
-          // Scrub review patterns and scripts
+          const text = $(el).text().trim();
           if (text.length > 2 && 
-              !text.includes('window.ue') &&
-              !text.includes('Reviewed in') &&
-              !text.includes('out of 5 stars') &&
-              !text.includes('Verified Purchase') &&
-              !text.includes('Helpful Report') &&
-              !text.includes('Read more') &&
               !text.includes('See more photos') && 
               !text.includes('Check details') && 
               !text.includes('See more') &&
@@ -598,26 +562,9 @@ async function startServer() {
         console.error("BOL AUDIT FAILED TO LAUNCH CHROMIUM:", err);
         throw new Error(`Bol Audit: Browser launch failed. Ensure system dependencies are installed. Original error: ${err.message}`);
       });
-
-      // Randomized User-Agent
-      const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0'
-      ];
-      const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-
       const context = await browser.newContext({
-        userAgent: randomUA,
-        viewport: { width: 1920, height: 1080 },
-        extraHTTPHeaders: {
-          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Sec-Ch-Ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-          'Sec-Ch-Ua-Mobile': '?0',
-          'Sec-Ch-Ua-Platform': '"Windows"',
-          'Upgrade-Insecure-Requests': '1'
-        }
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 }
       });
 
       // Set cookies for language and country
@@ -632,14 +579,11 @@ async function startServer() {
 
       const page = await context.newPage();
       
-      // Navigate with random delay
-      await page.waitForTimeout(Math.floor(Math.random() * 2000) + 500);
-
       // Navigate to search results
       let productUrl = searchUrl;
       console.log(`Navigating to: ${searchUrl}`);
       try {
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 45000 });
       } catch (e: any) {
         if (e.name === 'TimeoutError') {
           console.warn("Bol search navigation timed out, attempting to proceed...");
@@ -648,9 +592,10 @@ async function startServer() {
         }
       }
       
+      // Block Detection for Bol
       const bolBlockReason = await page.evaluate(() => {
         const text = document.body.innerText;
-        if ((text.includes('IP address') || text.includes('IP adres')) && (text.includes('is blocked') || text.includes('is geblokkeerd'))) return "IP Blocked";
+        if (text.includes('IP address') && text.includes('is blocked')) return "IP Blocked";
         if (text.includes('Access Denied') || text.includes('Toegang geweigerd')) return "Access Denied";
         if (text.includes('distil_identify_cookie')) return "Bot Protection";
         return null;
@@ -676,18 +621,14 @@ async function startServer() {
         console.log("Search page detected, looking for product link...");
         // Try to find the first product link - more robust selector
         const firstProductSelector = 'a[href*="/p/"]:not([href*="javascript"]), .product-title a, a[data-test="product-title"], .product-item--grid a, .product-list a';
-        await page.waitForSelector(firstProductSelector, { timeout: 5000 }).catch(() => null);
+        await page.waitForSelector(firstProductSelector, { timeout: 10000 }).catch(() => null);
         const firstProductLink = await page.getAttribute(firstProductSelector, 'href').catch(() => null);
         
         if (firstProductLink) {
           productUrl = firstProductLink.startsWith('http') ? firstProductLink : `https://www.bol.com${firstProductLink}`;
           console.log(`Navigating to product URL: ${productUrl}`);
-          
-          // Before navigating to PDP, stop blocking stylesheets to ensure selectors work if needed (though evaluate usually works on raw DOM)
-          // Actually, keep blocking to save time.
-          
           try {
-            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
           } catch (e: any) {
             if (e.name === 'TimeoutError') {
               console.warn("Bol product navigation timed out, attempting to proceed...");
@@ -710,7 +651,7 @@ async function startServer() {
             productUrl = anyProductLink.startsWith('http') ? anyProductLink : `https://www.bol.com${anyProductLink}`;
             console.log(`Fallback: Navigating to product URL: ${productUrl}`);
             try {
-              await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+              await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
             } catch (e: any) {
               if (e.name === 'TimeoutError') {
                 console.warn("Bol fallback product navigation timed out, attempting to proceed...");
@@ -726,36 +667,37 @@ async function startServer() {
       }
 
       // Ensure we are on a product page
-      await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot', { timeout: 10000 }).catch(() => {
+      await page.waitForSelector('div#pdp_main_section, [data-test="title"], h1.page-title, #buyBlockSlot', { timeout: 30000 }).catch(() => {
         console.warn("Product indicators not found, page might be slow or not a product page.");
       });
       
       // Update productUrl to final redirected URL
       productUrl = page.url();
 
-      // Faster hydration wait
-      await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => null);
+      // Wait for network idle to ensure hydration
+      await page.waitForLoadState('load', { timeout: 15000 }).catch(() => null);
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {
+        console.warn("Network idle timeout, proceeding with current state.");
+      });
 
-      // Reduced extra wait for dynamic content (variations, etc.)
-      await page.waitForTimeout(500);
+      // Extra wait for dynamic content (variations, etc.)
+      await page.waitForTimeout(3000);
 
-      // Scroll to media container to trigger lazy loading (only if we need images)
-      // Since images are no longer scored, we can skip elaborate scrolling if time is priority
-      /*
+      // Scroll to media container to trigger lazy loading
       await page.evaluate(() => {
         const media = document.querySelector('.js_product_media_items') || 
                       document.querySelector('.pdp-images') || 
                       document.querySelector('.buy-block');
         if (media) {
           media.scrollIntoView();
+          // Scroll a bit more to ensure thumbnails are triggered
           window.scrollBy(0, 300);
         }
       });
-      await page.waitForTimeout(500);
-      */
+      await page.waitForTimeout(2000);
 
-      // Wait for media container specifically (minimal wait)
-      await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 2000 }).catch(() => null);
+      // Wait for media container specifically
+      await page.waitForSelector('.js_product_media_items, .pdp-images, [data-test="product-main-image"]', { timeout: 10000 }).catch(() => null);
 
       const liveDataRaw = await page.evaluate(function() {
         // @ts-ignore
@@ -1129,17 +1071,18 @@ async function startServer() {
 
     let score = 0;
     if (mode === 'amazon') {
-      if (auditResult.title?.match) score += 33;
-      if (auditResult.description?.match || auditResult.description?.isAPlus) score += 33; 
+      if (auditResult.title?.match) score += 20;
+      if (auditResult.description?.match || auditResult.description?.isAPlus) score += 20; 
       if (auditResult.bullets && Array.isArray(auditResult.bullets)) {
         const matchCount = auditResult.bullets.filter((b: any) => b.match).length;
-        score += Math.min(matchCount * 6.8, 34); // Scaled 34 points over bullet points
+        score += Math.min(matchCount * 8, 40);
       }
+      if (auditResult.images?.match) score += 20;
     } else {
-      if (auditResult.title?.match) score += 50;
-      if (auditResult.description?.match) score += 50;
+      if (auditResult.title?.match) score += 33;
+      if (auditResult.description?.match) score += 33;
+      if (auditResult.images?.match) score += 34;
     }
-    score = Math.min(Math.round(score), 100);
 
     const sharedData: any = {
       "Identifier": identifier,
@@ -1579,13 +1522,9 @@ async function startServer() {
     if (mode === 'amazon' && live.hasAPlus) {
       descMatch = true;
       descStatus = "A+ Content Present (Auto-Match)";
-    } else if (mode === 'amazon') {
+    } else {
       descMatch = (isImageDesc || isAPlusImages || isAPlusData) ? false : (descSimilarity >= 0.85 || cleanMasterDesc === cleanLiveDesc);
       descStatus = ((isAPlusImages || isAPlusData) && cleanMasterDesc) ? "Manual Check Required: A+ Content Live" : null;
-    } else {
-      // Bol.com - strict match without A+ logic
-      descMatch = (descSimilarity >= 0.85 || cleanMasterDesc === cleanLiveDesc);
-      descStatus = null;
     }
 
     results.description = {

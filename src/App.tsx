@@ -32,20 +32,20 @@ const calculateScore = (auditResult: any, mode: string) => {
   
   let score = 0;
   if (mode === 'amazon') {
-    // Total 100: Title(33), Description/A+(33), Bullets(34)
-    if (auditResult.title?.match) score += 33;
-    if (auditResult.description?.match || auditResult.description?.isAPlus) score += 33;
+    // Total 100: Title(30), Description/A+(30), Bullets(40)
+    if (auditResult.title?.match) score += 30;
+    if (auditResult.description?.match || auditResult.description?.isAPlus) score += 30;
     if (auditResult.bullets && Array.isArray(auditResult.bullets)) {
       const matchCount = auditResult.bullets.filter((b: any) => b.match).length;
-      // Scale 34 points over bullets
-      score += Math.min(matchCount * 6.8, 34);
+      // 5 bullets * 8 = 40
+      score += Math.min(matchCount * 8, 40);
     }
   } else {
     // Total 100: Title(50), Description(50)
     if (auditResult.title?.match) score += 50;
     if (auditResult.description?.match) score += 50;
   }
-  return Math.min(Math.round(score), 100);
+  return score;
 };
 
 export default function App() {
@@ -236,7 +236,7 @@ export default function App() {
         ? getVal(row, 'Bol Title', 'Bol Product Name', 'Product Name NL', 'Product Name', 'Title NL', 'title nl', 'Title', 'Master Title')
         : getVal(row, 'Amazon Title', `AMZ title${suffix}`, `Title${suffix}`, `Amazon Title ${langCode}`),
       description: mode === 'bol'
-        ? getVal(row, 'Bol Description', 'Bol Body', 'Bol Content', 'bol description', 'bol body', 'BOL DESCRIPTION', 'BOL BODY', 'Product Description NL', 'Body NL', 'body nl', 'Description', 'Product Description', 'Master Description', 'Description NL')
+        ? getVal(row, 'Bol Description', 'Bol Body', 'Bol Content', 'Product Description NL', 'Body NL', 'body nl', 'Description', 'Product Description', 'Master Description', 'Description NL')
         : getVal(row, 'Amazon Description', `AMZ body${suffix}`, `Description${suffix}`, `Amazon Description ${langCode}`),
       bullets: [
         getVal(row, 'Bullet point 1', `Bullet point 1${suffix}`),
