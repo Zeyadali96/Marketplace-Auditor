@@ -1,5 +1,7 @@
 import express from 'express';
 import { chromium } from 'playwright';
+import { chromium as chromiumExtra } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
 import * as cheerio from 'cheerio';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,6 +10,8 @@ import axios from 'axios';
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
 import stringSimilarity from 'string-similarity';
+
+chromiumExtra.use(stealth());
 
 dotenv.config();
 
@@ -476,9 +480,348 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
   const livePriceNum = parseFloat(String(live.price || "").replace(/[^0-9.]/g, '')) || 0;
   if (masterPriceNum > 0 && Math.abs(masterPriceNum - livePriceNum) < 1.0) result.price.match = true;
 
-  if (live.images && live.images.length >= (master.images?.count || 1)) result.images.match = true;
+  if (live.images && live.images.length >= (master.images?.length || 1)) result.images.match = true;
 
   return result;
+}
+
+// --- Bol.com Helpers ---
+async function goToProduct(page: any, searchTerm: string) {
+  const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(searchTerm)}`;
+  console.log(`🔎 Searching Bol.com → ${searchUrl}`);
+
+  try {
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await page.waitForTimeout(2_000);
+  } catch (e) {
+    console.log(`⚠️ Navigation warning: ${(e as Error).message}`);
+  }
+
+  const title = await page.title().catch(() => '');
+  if (title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent')) {
+    console.log('🪪 Cookie banner detected – clicking “Akkoord”.');
+    await page
+      .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
+      .catch(() => null);
+    await page.waitForTimeout(2_000);
+  }
+
+  let content = await page.content().catch(() => '');
+  if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
+    console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
+    await page.waitForTimeout(10_000);
+    const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
+    await page.setViewportSize({ width: newWidth, height: 844 });
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
+    
+    // Test again
+    content = await page.content().catch(() => '');
+    if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
+      throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
+    }
+  }
+
+  if (!page.url().includes('/p/')) {
+    // Collect specific hrefs that match a product url format
+    const productHref = await page.evaluate(() => {
+      // Find elements acting as product links
+      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a[data-test="product-title"]'));
+      let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
+      
+      if (!target) {
+        // Fallback to any link containing '/p/' inside main or body
+        const allLinks = Array.from(document.querySelectorAll('a'));
+        target = allLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
+      }
+      return target ? (target as HTMLAnchorElement).href : null;
+    }).catch(() => null);
+
+    if (productHref) {
+      console.log(`🖱️ Navigating to product URL directly: ${productHref}`);
+      const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
+      await page.waitForTimeout(2_000);
+    } else {
+      const dbgTitle = await page.title().catch(() => '');
+      const dbgUrl = page.url();
+      throw new Error(`No product link found on the Bol.com results page. Title: "${dbgTitle}", URL: "${dbgUrl}"`);
+    }
+  }
+}
+
+async function extractCatalogue(page: any) {
+  await page.waitForLoadState('load', { timeout: 45_000 }).catch(() => null);
+  await page.waitForLoadState('networkidle', { timeout: 45_000 }).catch(() => null);
+  await page.waitForTimeout(2_000);
+
+  await page.mouse.wheel(0, 400);
+  await page.waitForTimeout(2_000);
+
+  return await page.evaluate(() => {
+    let title = '';
+    const el = document.querySelector('[data-test="title"]') || document.querySelector('h1.page-title') || document.querySelector('h1');
+    title = el ? (el as HTMLElement).innerText.trim() : '';
+    if (!title || title.length < 5) {
+      title = document.title.split('|')[0].trim();
+    }
+
+    let description = '';
+    const heading = Array.from(
+      document.querySelectorAll('h2,h3,h4,b,strong,span')
+    ).find(h =>
+      (h.textContent ?? '').toLowerCase().includes('productbeschrijving') ||
+      (h.textContent ?? '').toLowerCase().includes('product description')
+    );
+
+    if (heading) {
+      const parent = heading.closest('section') ?? heading.parentElement;
+      if (parent) {
+        const clone = parent.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll('.js_description_read_more, [data-test="read-more"], .pdp-description__read-more, button, a.button--link')
+          .forEach(el => el.remove());
+        description = (clone.innerText ?? '')
+          .replace(/Productbeschrijving|Product description/i, '')
+          .trim()
+          .replace(/toon meer|toon minder/gi, '')
+          .trim();
+      }
+    }
+
+    if (!description || description.length < 50) {
+      const selectors = [
+        '[data-test="description"]',
+        '[data-test="product-description"]',
+        '.js_product_description',
+        '.product-description',
+        '.product-description-content',
+        'div[itemprop="description"]',
+        '#descriptionBlock',
+        'section#description',
+        '.slot-product-description',
+        '.pdp-description',
+        '.manufacturer-info',
+        '.product-info',
+        '[data-test="product-info"]'
+      ];
+      const readMore = document.querySelector('.js_description_read_more, [data-test="read-more"], .pdp-description__read-more');
+      if (readMore) (readMore as HTMLElement).click();
+
+      const parts: string[] = [];
+      selectors.forEach(sel => {
+        const el = document.querySelector(sel);
+        if (el) {
+          const clone = el.cloneNode(true) as HTMLElement;
+          clone.querySelectorAll('.js_description_read_more, [data-test="read-more"], .pdp-description__read-more, button, a.button--link')
+            .forEach(b => b.remove());
+          let txt = (clone.innerText ?? '').trim();
+          if (txt.length > 20) {
+            txt = txt
+              .replace(/<br\s*\/?>/gi, '\n')
+              .replace(/<\/?p>/gi, '\n')
+              .replace(/<\/?div>/gi, '\n')
+              .replace(/<\/?[^>]+>/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .replace(/toon meer|toon minder/gi, '')
+              .trim();
+            parts.push(txt);
+          }
+        }
+      });
+      if (parts.length) description = parts.join('\n\n');
+    }
+
+    // Price extraction
+    let price = 'N/A';
+    const pageHtml = document.documentElement.innerHTML;
+    const priceMatch = pageHtml.match(/"offers"\s*:\s*\{[^}]*"@type"\s*:\s*"Offer"[^}]*"price"\s*:\s*"([\d.]+)"[^}]*"priceCurrency"\s*:\s*"EUR"/);
+    if (priceMatch) {
+      price = priceMatch[1];
+    } else {
+      // Fallback
+      const m = pageHtml.match(/"price"\s*:\s*([\d.]+)\s*,\s*"priceCurrency"\s*:\s*"EUR"/);
+      if (m) price = m[1];
+    }
+
+    if (price === 'N/A') {
+      const all = document.body.innerText;
+      const m = all.match(/€\s*([\d.]+,\d{2})/);
+      if (m) price = m[1].replace(',', '.');
+    }
+
+    let shipping = 'N/A';
+    const shipMatch = pageHtml.match(/"deliveryDescription"\s*,\s*"([^"]+)"/);
+    if (shipMatch) {
+      shipping = shipMatch[1];
+    } else {
+      const shipSel = [
+        '[data-test="delivery-message"]',
+        '[data-test="delivery"]',
+        'span[class*="delivery"]',
+        'div[class*="shipping"]',
+        '[class*="DeliveryInformation"]',
+        'span[class*="Delivery"]',
+        '.delivery-text',
+        '[data-element-type="delivery"]',
+        'span[itemprop="deliveryTime"]'
+      ];
+      for (const sel of shipSel) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const txt = (el as HTMLElement).innerText ?? (el as HTMLElement).textContent;
+          if (txt && txt.trim().length) {
+            shipping = txt.trim();
+            break;
+          }
+        }
+      }
+      if (shipping === 'N/A') {
+        const body = document.body.innerText;
+        const m = body.match(/Uiterlijk\s+(.+?)(?:\s+in\s+huis|$)/i) ||
+                  body.match(/Morgen\s+in\s+huis/i) ||
+                  body.match(/Vandaag\s+.*?(?:in|om)/i) ||
+                  body.match(/Bezorging:\s+(.+?)(?:\n|$)/i);
+        if (m) shipping = m[0] ?? m[1] ?? 'N/A';
+      }
+    }
+
+    const imgs: string[] = [];
+    const allImages = Array.from(document.querySelectorAll('img'));
+    allImages.forEach(img => {
+      const alt = img.getAttribute('alt') || '';
+      if (alt.includes('Afbeelding nummer')) {
+        const src = img.src || img.getAttribute('data-src') || '';
+        if (src && src.startsWith('http')) imgs.push(src);
+      }
+    });
+
+    if (imgs.length === 0) {
+      // Fallback
+      const mainSel = [
+        '[data-test="product-main-image"] img',
+        '.js_main_product_image',
+        '.pdp-main-image img',
+        'img.js_main_product_image'
+      ];
+      mainSel.forEach(sel => {
+        const img = document.querySelector(sel) as HTMLImageElement | null;
+        if (img && img.src && img.src.startsWith('http')) imgs.push(img.src);
+      });
+
+      const thumbSel = [
+        '.js_product_media_items img',
+        '.pdp-images img',
+        '.js_image_container img',
+        '.product-images__item img'
+      ];
+      thumbSel.forEach(sel => {
+        const thumbs = Array.from(document.querySelectorAll(sel)) as HTMLImageElement[];
+        thumbs.forEach(i => {
+          const src = i.src || i.getAttribute('data-src') || i.getAttribute('src');
+          if (src && src.includes('media.s-bol.com')) imgs.push(src);
+        });
+      });
+    }
+
+    const bulletSel = [
+      '[data-test="product-features"] li',
+      '.product-features li',
+      '.js_product_features li',
+      '.specs-list__item',
+      '.product-specifications li'
+    ];
+    const bulletSet = new Set<string>();
+    bulletSel.forEach(sel => {
+      document.querySelectorAll(sel).forEach(li => {
+        const txt = (li as HTMLElement).innerText.trim();
+        if (txt.length > 3) bulletSet.add(txt);
+      });
+    });
+
+    // Variations extraction
+    let variationsData = '';
+    const varItems = Array.from(document.querySelectorAll('div, label, a, span, button')).filter(el => {
+      const t = (el.textContent || '').toLowerCase();
+      return t.includes('kies je ');
+    });
+    
+    if (varItems.length > 0) {
+       // Look for the closest container and extract its text
+       const container = varItems[0].closest('section, div.variant-container, div.product-variants, [data-test="variants"], [class*="variant"]') || varItems[0].parentElement?.parentElement;
+       if (container) {
+         variationsData = (container as HTMLElement).innerText.trim().replace(/\s+/g, ' ');
+       } else {
+         variationsData = "Various options found: " + varItems.map(v => v.textContent?.replace(/\s+/g, ' ').trim()).join(' | ');
+       }
+    } else {
+       // Fallback checking for family properties in pageHtml
+       const varMatch = pageHtml.match(/"productFamily"\s*:\s*\{"products"\s*:\s*\[(.*?)\]\s*\}/);
+       if (varMatch) {
+         try {
+           const parsed = JSON.parse(`[${varMatch[1]}]`);
+           variationsData = parsed.map((v: any) => `${v.title || v.name}`).join(' | ');
+         } catch(e) {}
+       }
+    }
+
+    return {
+      title,
+      description,
+      price,
+      shipping,
+      images: Array.from(new Set(imgs)),
+      bullets: Array.from(bulletSet),
+      liveVariations: variationsData
+    };
+  });
+}
+
+function calculateBolShippingDays(rawShippingTime: string): string {
+  if (!rawShippingTime) return "N/A";
+  
+  const text = rawShippingTime.toLowerCase();
+  
+  if (text.includes("vandaag")) return "0";
+  if (text.includes("morgen")) return "1";
+  if (text.includes("overmorgen")) return "2";
+  
+  const months = ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
+  const monthRegexText = months.join('|');
+  const dateRegex = new RegExp(`(\\d{1,2})\\s*(${monthRegexText})`, 'i');
+  
+  const match = text.match(dateRegex);
+  if (match) {
+    const day = parseInt(match[1]);
+    const month = months.indexOf(match[2].toLowerCase());
+    if (month !== -1) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      let targetDate = new Date(today.getFullYear(), month, day);
+      if (targetDate.getTime() < today.getTime() - 1000 * 60 * 60 * 24 * 30) {
+        targetDate = new Date(today.getFullYear() + 1, month, day);
+      }
+      
+      const diffTime = targetDate.getTime() - today.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      return diffDays >= 0 ? diffDays.toString() : "N/A";
+    }
+  }
+  
+  const days = ['zondag', 'maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag'];
+  const dayRegex = new RegExp(`(${days.join('|')})`, 'i');
+  const dayMatchText = text.match(dayRegex);
+  if (dayMatchText) {
+    const targetDay = days.indexOf(dayMatchText[1].toLowerCase());
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    const currentDay = today.getDay();
+    let diffDays = targetDay - currentDay;
+    if (diffDays <= 0) diffDays += 7;
+    return diffDays.toString();
+  }
+
+  return "N/A";
 }
 
 // 3. Audit Bol.com
@@ -486,68 +829,75 @@ app.post("/api/audit/bol", async (req, res) => {
   let browser;
   try {
     const { ean, masterData } = req.body;
-    const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${ean}`;
-    const proxyServer = process.env.PROXY_SERVER;
-    
-    const launchOptions: any = {
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    if (!ean) throw new Error('Missing "ean" in request body');
+
+    const launchOpts: any = {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled'
+      ]
     };
+    
+    const proxyServer = process.env.PROXY_SERVER;
     if (proxyServer) {
-      launchOptions.proxy = {
+      launchOpts.proxy = {
         server: proxyServer,
         username: process.env.PROXY_USERNAME,
         password: process.env.PROXY_PASSWORD
       };
     }
-
-    browser = await chromium.launch(launchOptions);
-    const context = await browser.newContext();
-    await context.addCookies([
-      { name: 'cookie_consent', value: 'true', domain: '.bol.com', path: '/' },
-      { name: 'bol_gdpr_consent', value: 'yes', domain: '.bol.com', path: '/' }
-    ]);
-    const page = await context.newPage();
-    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 45000 });
-
-    const content = await page.content();
-    const $ = cheerio.load(content);
     
-    // Find first product
-    const firstProduct = $('.product-item--grid, .product-item--list').first();
-    let productUrl = firstProduct.find('a.product-title').attr('href');
-    if (productUrl && !productUrl.startsWith('http')) productUrl = 'https://www.bol.com' + productUrl;
+    browser = await chromiumExtra.launch(launchOpts);
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      viewport: { width: Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366, height: Math.floor(Math.random() * (1080 - 768 + 1)) + 768 },
+      locale: 'nl-NL',
+      extraHTTPHeaders: {
+        'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'none',
+        'sec-fetch-user': '?1',
+        'upgrade-insecure-requests': '1'
+      }
+    });
 
-    if (productUrl) {
-      await page.goto(productUrl, { waitUntil: 'networkidle' });
-      const productContent = await page.content();
-      const $p = cheerio.load(productContent);
-      
-      const bolTitle = $p('h1.page-heading').text().trim();
-      const bolPrice = $p('.promo-price').text().trim().replace(/\s+/g, '');
-      const bolDesc = $p('.product-description').text().trim();
-      const bolImages: string[] = [];
-      $p('.js_bundle_image, .js_product_img').each((_, el) => {
-        const src = $p(el).attr('src') || $p(el).attr('data-src');
-        if (src) bolImages.push(src);
-      });
+    await context.addInitScript(() => {
+      // @ts-ignore
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
 
-      const liveData = {
-        title: bolTitle,
-        price: bolPrice,
-        description: bolDesc,
-        images: Array.from(new Set(bolImages)),
-        url: productUrl,
-        hasAPlus: false,
-        shippingDays: "N/A",
-        variations: 0,
-        bullets: []
-      };
+    const page = await context.newPage();
+    
+    await goToProduct(page, ean);
+    const data = await extractCatalogue(page);
+    
+    const bolShippingDays = calculateBolShippingDays(data.shipping);
 
-      const auditResult = await performAudit(masterData, liveData, 'bol');
-      res.json({ liveData, auditResult });
-    } else {
-      res.status(404).json({ error: "Product not found on Bol" });
-    }
+    const liveData = {
+      title: data.title,
+      price: data.price,
+      description: data.description,
+      images: data.images,
+      url: page.url(),
+      hasAPlus: false,
+      shipping: bolShippingDays !== "N/A" ? `${bolShippingDays} days` : data.shipping,
+      shippingDays: bolShippingDays,
+      rawShipping: data.shipping,
+      variations: data.liveVariations && data.liveVariations.length > 5 ? data.liveVariations.split('|').length || 1 : 0,
+      bullets: data.bullets,
+      rawVariationsText: data.liveVariations || ''
+    };
+    
+    const auditResult = await performAudit(masterData, liveData, 'bol');
+    res.json({ liveData, auditResult });
+    
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   } finally {
@@ -589,7 +939,7 @@ app.post("/api/sheets/save-audit", async (req, res) => {
     const doc = new GoogleSpreadsheet(spreadsheetId, auth);
     await doc.loadInfo();
     
-    const targetSheetName = "Amazon QC results";
+    const targetSheetName = mode === "bol" ? "Bol QC results" : "Amazon QC results";
     // Case-insensitive search for the sheet
     const sheet = doc.sheetsByTitle[targetSheetName] || 
                   doc.sheetsByIndex.find(s => s.title.toLowerCase().trim() === targetSheetName.toLowerCase());
@@ -599,6 +949,9 @@ app.post("/api/sheets/save-audit", async (req, res) => {
       throw new Error(`Sheet "${targetSheetName}" not found. Available sheets: ${availableSheets}`);
     }
 
+    // Always override everything and start from row 2
+    await sheet.clearRows();
+
     // Mapping according to instructions
     const bulletMatchCount = (auditResult && Array.isArray(auditResult.bullets)) ? auditResult.bullets.filter((b: any) => b.match).length : 0;
     const bulletMatchText = bulletMatchCount > 0 ? 'Yes' : 'No';
@@ -607,6 +960,8 @@ app.post("/api/sheets/save-audit", async (req, res) => {
     const resultRow: any = {
       'Date': timestamp,
       'date': timestamp,
+      'EAN': identifier,
+      'ean': identifier,
       'ASIN': identifier,
       'asin': identifier,
       'ASIN/EAN': identifier,
@@ -630,17 +985,22 @@ app.post("/api/sheets/save-audit", async (req, res) => {
       'Notes': liveData?.hasAPlus ? 'A+ content available' : ''
     };
 
+    const pfx = mode === 'bol' ? 'Bol' : 'Amazon';
+    const shortPfx = mode === 'bol' ? 'BOL' : 'AMZ';
+
     // Images mapping - User wants "each relevant column based on number image"
     if (masterData && masterData.images && Array.isArray(masterData.images)) {
       masterData.images.slice(0, 10).forEach((url: string, i: number) => {
         const formula = url ? `=IMAGE("${url}")` : '';
         const index = i + 1;
-        resultRow[`Amazon Master Image ${index}`] = formula;
-        resultRow[`AMZ Master Image ${index}`] = formula;
+        resultRow[`${pfx} Master Image ${index}`] = formula;
+        resultRow[`${shortPfx} Master Image ${index}`] = formula;
         resultRow[`Master Image ${index}`] = formula;
-        resultRow[`AMZ IMG ${index}`] = formula;
-        resultRow[`image amazon data ${index}`] = formula;
-        resultRow[`Image Amazon Data ${index}`] = formula;
+        resultRow[`${shortPfx} IMG ${index}`] = formula;
+        resultRow[`image ${mode} data ${index}`] = formula;
+        resultRow[`Image ${pfx} Data ${index}`] = formula;
+        
+        resultRow[`Amazon Master Image ${index}`] = formula;
       });
     }
 
@@ -648,51 +1008,40 @@ app.post("/api/sheets/save-audit", async (req, res) => {
       liveData.images.slice(0, 10).forEach((url: string, i: number) => {
         const formula = url ? `=IMAGE("${url}")` : '';
         const index = i + 1;
-        resultRow[`Amazon Live Image ${index}`] = formula;
-        resultRow[`AMZ Live Image ${index}`] = formula;
+        resultRow[`${pfx} Live Image ${index}`] = formula;
+        resultRow[`${shortPfx} Live Image ${index}`] = formula;
         resultRow[`Live Image ${index}`] = formula;
-        resultRow[`LIVE IMG ${index}`] = formula;
-        resultRow[`image amazon live ${index}`] = formula;
-        resultRow[`Image Amazon Live ${index}`] = formula;
+        resultRow[`${shortPfx} L IMG ${index}`] = formula;
+        resultRow[`image ${mode} live ${index}`] = formula;
+        resultRow[`Image ${pfx} Live ${index}`] = formula;
+        
+        resultRow[`Amazon Live Image ${index}`] = formula;
       });
     }
 
-    // Search for existing row to override
-    const rows = await sheet.getRows();
-    const existingRow = rows.find(r => r.get('ASIN/EAN') === identifier || r.get('ASIN') === identifier || r.get('Identifier') === identifier);
-
+    // Search for existing row to override removed based on prompt instruction to always overwrite starting from row 2
+    await sheet.loadHeaderRow();
     const headers = sheet.headerValues;
     const findHeader = (target: string) => {
       return headers.find(h => h.toLowerCase().trim() === target.toLowerCase().trim());
     };
 
-    if (existingRow) {
-      // Update existing row
-      Object.keys(resultRow).forEach(key => {
-        const matchingHeader = findHeader(key);
-        if (matchingHeader) {
-          existingRow.set(matchingHeader, resultRow[key]);
-        }
-      });
-      await existingRow.save();
-    } else {
-      // Add new row - mapping to actual sheet headers
-      const rowToSave: any = {};
-      Object.keys(resultRow).forEach(key => {
-        const matchingHeader = findHeader(key);
-        if (matchingHeader) {
-          rowToSave[matchingHeader] = resultRow[key];
-        }
-      });
-      
-      // If we couldn't find some headers in the rowToSave, but we have them in resultRow and they are standard, 
-      // they might not be added if headers don't exist. But here we assume sheet has them.
-      if (Object.keys(rowToSave).length > 0) {
-        await sheet.addRow(rowToSave);
-      } else {
-        // Fallback to original object if no headers matched (unlikely but safe)
-        await sheet.addRow(resultRow);
+    // Add new row - mapping to actual sheet headers
+    const rowToSave: any = {};
+    Object.keys(resultRow).forEach(key => {
+      const matchingHeader = findHeader(key);
+      if (matchingHeader) {
+        rowToSave[matchingHeader] = resultRow[key];
       }
+    });
+    
+    // If we couldn't find some headers in the rowToSave, but we have them in resultRow and they are standard, 
+    // they might not be added if headers don't exist. But here we assume sheet has them.
+    if (Object.keys(rowToSave).length > 0) {
+      await sheet.addRow(rowToSave);
+    } else {
+      // Fallback to original object if no headers matched (unlikely but safe)
+      await sheet.addRow(resultRow);
     }
     
     res.json({ success: true });
@@ -702,37 +1051,108 @@ app.post("/api/sheets/save-audit", async (req, res) => {
   }
 });
 
-app.post("/api/sheets/clear-sheet", async (req, res) => {
+app.post("/api/sheets/batch-save-audit", async (req, res) => {
   try {
-    const { sheetId, sheetName } = req.body;
-    
+    const { mode, audits } = req.body;
+    if (!audits || !Array.isArray(audits) || audits.length === 0) {
+      return res.json({ success: true, message: "No audits to save." });
+    }
+
     const auth = new JWT({
       email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
       key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 
-    const doc = new GoogleSpreadsheet(sheetId || '1V4lNf30SlBwczSvGX9rfn5eWFH2AvMO4TqMHAHalS7s', auth);
+    const spreadsheetId = '1V4lNf30SlBwczSvGX9rfn5eWFH2AvMO4TqMHAHalS7s';
+    const doc = new GoogleSpreadsheet(spreadsheetId, auth);
     await doc.loadInfo();
-    const sheet = doc.sheetsByTitle[sheetName];
-    if (!sheet) return res.status(404).json({ error: "Sheet not found" });
 
-    // Get all rows
-    const rows = await sheet.getRows();
-    // Delete them all
-    for (const row of rows) {
-      await row.delete();
+    const targetSheetName = mode === "bol" ? "Bol QC results" : "Amazon QC results";
+    const sheet = doc.sheetsByTitle[targetSheetName] || 
+                  doc.sheetsByIndex.find(s => s.title.toLowerCase().trim() === targetSheetName.toLowerCase());
+
+    if (!sheet) {
+      throw new Error(`Sheet "${targetSheetName}" not found.`);
     }
+
+    // Clear existing rows to start automatically from row 2
+    await sheet.clearRows();
+    await sheet.loadHeaderRow();
     
-    res.json({ success: true });
+    const rowsToAdd = audits.map((audit: any) => {
+      const { identifier, auditResult, liveData, masterData } = audit;
+      const bulletMatchCount = (auditResult && Array.isArray(auditResult.bullets)) ? auditResult.bullets.filter((b: any) => b.match).length : 0;
+      const bulletMatchText = bulletMatchCount > 0 ? 'Yes' : 'No';
+      const timestamp = new Date().toLocaleString();
+
+      const row: any = {
+        'Date': timestamp,
+        'date': timestamp,
+        'EAN': identifier,
+        'ean': identifier,
+        'ASIN': identifier,
+        'asin': identifier,
+        'ASIN/EAN': identifier,
+        'asin/ean': identifier,
+        'Identifier': identifier,
+        'identifier': identifier,
+        'Mode': mode,
+        'mode': mode,
+        'Title Match': auditResult?.title?.match ? 'Yes' : 'No',
+        'Description Match': liveData?.hasAPlus ? 'A+ content available' : (auditResult?.description?.match ? 'Yes' : 'No'),
+        'Bullet Points Match': bulletMatchText,
+        'Variation': auditResult?.variations?.match ? 'Yes' : 'No',
+        'A+ Content': liveData?.hasAPlus ? 'Yes' : 'No',
+        'Price Live': liveData?.price || 'N/A',
+        'price live': liveData?.price || 'N/A',
+        'Price': liveData?.price || 'N/A',
+        'price': liveData?.price || 'N/A',
+        'Shipping Live (Days)': liveData?.shippingDays || 'N/A',
+        'Shipping Time': liveData?.shippingDays || 'N/A',
+        'shipping time': liveData?.shippingDays || 'N/A',
+        'Notes': liveData?.hasAPlus ? 'A+ content available' : ''
+      };
+
+      const pfx = mode === 'bol' ? 'Bol' : 'Amazon';
+      const shortPfx = mode === 'bol' ? 'BOL' : 'AMZ';
+
+      if (masterData && Array.isArray(masterData.images)) {
+        masterData.images.slice(0, 10).forEach((url: string, i: number) => {
+          const formula = url ? `=IMAGE("${url}")` : '';
+          row[`${pfx} Master Image ${i + 1}`] = formula;
+          row[`${shortPfx} Master Image ${i + 1}`] = formula;
+          row[`Master Image ${i + 1}`] = formula;
+          row[`${shortPfx} IMG ${i + 1}`] = formula;
+          row[`image ${mode} data ${i + 1}`] = formula;
+          row[`Image ${pfx} Data ${i + 1}`] = formula;
+          
+          row[`Amazon Master Image ${i + 1}`] = formula; 
+        });
+      }
+
+      if (liveData && Array.isArray(liveData.images)) {
+        liveData.images.slice(0, 10).forEach((url: string, i: number) => {
+          const formula = url ? `=IMAGE("${url}")` : '';
+          row[`${pfx} Live Image ${i + 1}`] = formula;
+          row[`${shortPfx} Live Image ${i + 1}`] = formula;
+          row[`Live Image ${i + 1}`] = formula;
+          row[`${shortPfx} L IMG ${i + 1}`] = formula;
+          row[`image ${mode} live ${i + 1}`] = formula;
+          row[`Image ${pfx} Live ${i + 1}`] = formula;
+          
+          row[`Amazon Live Image ${i + 1}`] = formula; 
+        });
+      }
+      return row;
+    });
+
+    await sheet.addRows(rowsToAdd);
+    res.json({ success: true, count: rowsToAdd.length });
   } catch (error: any) {
-    console.error("Clear Sheet Error:", error);
+    console.error("Batch Save Audit Error:", error);
     res.status(500).json({ error: error.message });
   }
-});
-
-app.post("/api/sheets/batch-save-audit", async (req, res) => {
-  res.json({ success: true });
 });
 
 // Vite middleware for development

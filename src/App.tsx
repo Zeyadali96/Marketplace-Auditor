@@ -140,31 +140,8 @@ export default function App() {
     }
   };
 
-  const [isClearing, setIsClearing] = useState(false);
-
-  const clearSheet = async () => {
-    setIsClearing(true);
-    try {
-      const targetSheet = mode === 'amazon' ? 'Amazon QC results' : 'QC results';
-      const resp = await fetch('/api/sheets/clear-sheet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sheetId, sheetName: targetSheet })
-      });
-      const res = await resp.json();
-      if (res.error) throw new Error(res.error);
-    } catch (err: any) {
-      setError(`Failed to clear sheet: ${err.message}`);
-    } finally {
-      setIsClearing(false);
-    }
-  };
-
   const runRangeAudit = async () => {
-    // Stage 1: Clear (Wipe Protocol Step 1 & 2)
-    await clearSheet();
-
-    // Stage 2: Audit Loop (Wipe Protocol Step 3)
+    // Stage 1: Audit Loop
     const startIdx = Math.max(0, range.start - 1);
     const endIdx = Math.min(data.length - 1, range.end - 1);
     
@@ -234,11 +211,6 @@ export default function App() {
     document.body.removeChild(a);
   };
   const runAudit = async (rowIndex: number, skipSave = false) => {
-    // If it's a single audit (not part of range), clear sheet first
-    if (!skipSave) {
-      await clearSheet();
-    }
-    
     const row = data[rowIndex];
     const asin = getVal(row, 'ASIN', 'asin');
     const ean = getVal(row, 'EAN', 'ean');
@@ -413,10 +385,10 @@ export default function App() {
             <div className="flex items-center gap-2">
               <button 
                 onClick={runRangeAudit}
-                disabled={data.length === 0 || auditing !== null || isClearing}
+                disabled={data.length === 0 || auditing !== null}
                 className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition-all shadow-lg shadow-indigo-100 disabled:opacity-50 flex items-center gap-2"
               >
-                {auditing !== null || isClearing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                {auditing !== null ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
                 Audit Range
               </button>
             </div>
@@ -577,11 +549,11 @@ export default function App() {
                           <div className="flex items-center justify-end gap-2">
                             <button 
                               onClick={() => runAudit(idx)}
-                              disabled={auditing === idx.toString() || isClearing}
+                              disabled={auditing === idx.toString()}
                               className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
                               title="Run Audit"
                             >
-                              {auditing === idx.toString() || (isClearing && selectedRow !== idx) ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                              {auditing === idx.toString() ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
                             </button>
                             <button 
                               onClick={() => setSelectedRow(selectedRow === idx ? null : idx)}
@@ -609,10 +581,10 @@ export default function App() {
                                   <p className="text-slate-500">Run audit to see detailed comparison</p>
                                   <button 
                                     onClick={() => runAudit(idx)}
-                                    disabled={auditing !== null || isClearing}
+                                    disabled={auditing !== null}
                                     className="mt-4 text-indigo-600 font-medium hover:underline disabled:opacity-50"
                                   >
-                                    {isClearing ? 'Clearing Sheet...' : 'Start Audit Now'}
+                                    Start Audit Now
                                   </button>
                                 </div>
                               ) : (
