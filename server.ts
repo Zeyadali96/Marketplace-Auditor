@@ -486,82 +486,67 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
 }
 
 // --- Bol.com Helpers ---
-async function goToProduct(page: any, searchTerm: string) {
+async function goToProduct(page: any, searchTerm: string): Promise<string> {
   const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(searchTerm)}`;
-  console.log(`🔎 Searching Bol.com → ${searchUrl}`);
+  console.log(`🔎 Searching Bol.com via fetch → ${searchUrl}`);
 
-  try {
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    await page.waitForTimeout(2_000);
-  } catch (e) {
-    console.log(`⚠️ Navigation warning: ${(e as Error).message}`);
-  }
-
-  const title = await page.title().catch(() => '');
-  if (title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent')) {
-    console.log('🪪 Cookie banner detected – clicking “Akkoord”.');
-    await page
-      .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
-      .catch(() => null);
-    await page.waitForTimeout(2_000);
-  }
-
-  let content = await page.content().catch(() => '');
-  const titleForWAF = await page.title().catch(() => '');
-  const isWafBlock = (c: string, t: string) => {
-    const cl = c.toLowerCase();
-    const tl = t.toLowerCase();
-    return cl.includes('ip adres is geblokkeerd') || 
-           cl.includes('rustig aan speed racer') || 
-           cl.includes('sec-if-cpt-container') || 
-           cl.includes('akamai') ||
-           cl.includes('access denied') ||
-           cl.includes('reference #') ||
-           tl === 'bol' ||
-           tl === 'access denied';
+  const fetchOpts = {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
   };
 
-  if (isWafBlock(content, titleForWAF)) {
-    console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
-    await page.waitForTimeout(10_000);
-    const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
-    await page.setViewportSize({ width: newWidth, height: 844 });
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
-    
-    // Test again
-    content = await page.content().catch(() => '');
-    const titleForWAF2 = await page.title().catch(() => '');
-    if (isWafBlock(content, titleForWAF2)) {
-      throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
+  const searchRes = await fetch(searchUrl, fetchOpts).catch(err => {
+    throw new Error(`Fetch failed: ${err.message}`);
+  });
+  
+  const searchHtml = await searchRes.text();
+  await page.setContent(searchHtml);
+
+  let productUrl = await page.evaluate(() => {
+     let el = document.querySelector('a.product-title, a.product-item--row__title, a[data-test="product-title"]');
+     if (!el) el = document.querySelector('.product-list a[href*="/p/"]');
+     if (!el) {
+         const links = Array.from(document.querySelectorAll('a[href*="/p/"]'));
+         el = links.find(a => {
+            const href = (a as HTMLAnchorElement).href;
+            return href && !href.includes('review') && !href.includes('login') && href.includes('/p/');
+         }) || null;
+     }
+     return el ? (el as HTMLAnchorElement).href : null;
+  });
+
+  if (!productUrl) {
+    const isWaf = searchHtml.toLowerCase().includes('ip adres is geblokkeerd') || searchHtml.toLowerCase().includes('akamai');
+    if (isWaf) {
+       throw new Error("WAF_BLOCKED: Bol.com blocked the search request. IP address is blocked by their anti-bot system.");
     }
+    const dbgTitle = await page.title().catch(() => '');
+    throw new Error(`No product link found on the Bol.com results page. Title: "${dbgTitle}"`);
   }
 
-  if (!page.url().includes('/p/')) {
-    // Collect specific hrefs that match a product url format
-    const productHref = await page.evaluate(() => {
-      // Find elements acting as product links
-      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a[data-test="product-title"]'));
-      let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
-      
-      if (!target) {
-        // Fallback to any link containing '/p/' inside main or body
-        const allLinks = Array.from(document.querySelectorAll('a'));
-        target = allLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
-      }
-      return target ? (target as HTMLAnchorElement).href : null;
-    }).catch(() => null);
-
-    if (productHref) {
-      console.log(`🖱️ Navigating to product URL directly: ${productHref}`);
-      const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
-      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
-      await page.waitForTimeout(2_000);
-    } else {
-      const dbgTitle = await page.title().catch(() => '');
-      const dbgUrl = page.url();
-      throw new Error(`No product link found on the Bol.com results page. Title: "${dbgTitle}", URL: "${dbgUrl}"`);
-    }
+  // Ensure leading domain if it's relative or about:blank relative
+  if (productUrl.startsWith('about:blank')) {
+       productUrl = productUrl.replace('about:blank', 'https://www.bol.com');
+  } else if (!productUrl.startsWith('http')) {
+       productUrl = 'https://www.bol.com' + (productUrl.startsWith('/') ? productUrl : '/' + productUrl);
   }
+
+  console.log(`🖱️ Fetching product URL directly: ${productUrl}`);
+  const productRes = await fetch(productUrl, fetchOpts).catch(err => {
+      throw new Error(`Product fetch failed: ${err.message}`);
+  });
+  
+  const productHtml = await productRes.text();
+  const isWaf = productHtml.toLowerCase().includes('ip adres is geblokkeerd') || productHtml.toLowerCase().includes('akamai');
+  if (isWaf) {
+     throw new Error("WAF_BLOCKED: Bol.com blocked the product request.");
+  }
+
+  await page.setContent(productHtml);
+  return productUrl;
 }
 
 async function extractCatalogue(page: any) {
@@ -890,7 +875,7 @@ app.post("/api/audit/bol", async (req, res) => {
 
     const page = await context.newPage();
     
-    await goToProduct(page, ean);
+    const productUrl = await goToProduct(page, ean);
     const data = await extractCatalogue(page);
     
     const bolShippingDays = calculateBolShippingDays(data.shipping);
@@ -900,7 +885,7 @@ app.post("/api/audit/bol", async (req, res) => {
       price: data.price,
       description: data.description,
       images: data.images,
-      url: page.url(),
+      url: productUrl,
       hasAPlus: false,
       shipping: bolShippingDays !== "N/A" ? `${bolShippingDays} days` : data.shipping,
       shippingDays: bolShippingDays,
