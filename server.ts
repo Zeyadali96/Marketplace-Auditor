@@ -507,7 +507,21 @@ async function goToProduct(page: any, searchTerm: string) {
   }
 
   let content = await page.content().catch(() => '');
-  if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
+  const titleForWAF = await page.title().catch(() => '');
+  const isWafBlock = (c: string, t: string) => {
+    const cl = c.toLowerCase();
+    const tl = t.toLowerCase();
+    return cl.includes('ip adres is geblokkeerd') || 
+           cl.includes('rustig aan speed racer') || 
+           cl.includes('sec-if-cpt-container') || 
+           cl.includes('akamai') ||
+           cl.includes('access denied') ||
+           cl.includes('reference #') ||
+           tl === 'bol' ||
+           tl === 'access denied';
+  };
+
+  if (isWafBlock(content, titleForWAF)) {
     console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
     await page.waitForTimeout(10_000);
     const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
@@ -516,7 +530,8 @@ async function goToProduct(page: any, searchTerm: string) {
     
     // Test again
     content = await page.content().catch(() => '');
-    if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
+    const titleForWAF2 = await page.title().catch(() => '');
+    if (isWafBlock(content, titleForWAF2)) {
       throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
     }
   }
