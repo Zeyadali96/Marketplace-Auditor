@@ -32,7 +32,7 @@ const calculateScore = (auditResult: any, mode: string) => {
   
   let score = 0;
   if (mode === 'amazon') {
-    // Total 100: Title(30), Description/A+(30), Bullets(40)
+    // Total 100: Title(30), Description/A+(30), 5 Bullets(40 total)
     if (auditResult.title?.match) score += 30;
     if (auditResult.description?.match || auditResult.description?.isAPlus) score += 30;
     if (auditResult.bullets && Array.isArray(auditResult.bullets)) {
@@ -55,6 +55,7 @@ export default function App() {
   const [countryCode, setCountryCode] = useState('DE');
   const [marketplace, setMarketplace] = useState('amazon.de');
   const [data, setData] = useState<any[]>([]);
+  const [masterSheetData, setMasterSheetData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [auditing, setAuditing] = useState<string | null>(null);
   const [savingRow, setSavingRow] = useState<number | null>(null);
@@ -117,6 +118,21 @@ export default function App() {
         throw new Error(errorMsg);
       }
       setData(result.data);
+
+      // Additionally fetch Amazon Data for master image lookup if it's not the current sheet
+      if (mode === 'amazon' && sheetName !== 'Amazon Data') {
+        const masterResp = await fetch('/api/sheets/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sheetId, sheetName: 'Amazon Data' })
+        });
+        const masterResult = await masterResp.json();
+        if (!masterResult.error) {
+          setMasterSheetData(masterResult.data);
+        }
+      } else if (sheetName === 'Amazon Data') {
+        setMasterSheetData(result.data);
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -129,10 +145,11 @@ export default function App() {
   const clearSheet = async () => {
     setIsClearing(true);
     try {
+      const targetSheet = mode === 'amazon' ? 'Amazon QC results' : 'QC results';
       const resp = await fetch('/api/sheets/clear-sheet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode })
+        body: JSON.stringify({ sheetId, sheetName: targetSheet })
       });
       const res = await resp.json();
       if (res.error) throw new Error(res.error);
@@ -217,6 +234,11 @@ export default function App() {
     document.body.removeChild(a);
   };
   const runAudit = async (rowIndex: number, skipSave = false) => {
+    // If it's a single audit (not part of range), clear sheet first
+    if (!skipSave) {
+      await clearSheet();
+    }
+    
     const row = data[rowIndex];
     const asin = getVal(row, 'ASIN', 'asin');
     const ean = getVal(row, 'EAN', 'ean');
@@ -230,6 +252,12 @@ export default function App() {
     // Extract language code from marketplace (e.g., amazon.de -> DE)
     const langCode = mode === 'amazon' ? countryCode : 'NL';
     const suffix = langCode ? ` ${langCode}` : '';
+
+    // Find master reference row from Amazon Data sheet if available
+    const asinFromRow = getVal(row, 'ASIN', 'asin');
+    const masterReferenceRow = mode === 'amazon' && masterSheetData.length > 0 
+      ? (masterSheetData.find(r => getVal(r, 'ASIN', 'asin') === asinFromRow) || row)
+      : row;
 
     const masterData = {
       title: mode === 'bol' 
@@ -253,9 +281,18 @@ export default function App() {
             getVal(row, 'Bol IMG 10')
           ].filter(Boolean)
         : [
-            getVal(row, 'AMZ IMG 1'), getVal(row, 'AMZ IMG 2'), getVal(row, 'AMZ IMG 3'),
-            getVal(row, 'AMZ IMG 4'), getVal(row, 'AMZ IMG 5'), getVal(row, 'AMZ IMG 6'),
-            getVal(row, `AMZ IMG 1${suffix}`), getVal(row, `AMZ IMG 2${suffix}`)
+            getVal(masterReferenceRow, 'AMZ IMG 1', 'Image 1', 'image 1', 'AMZ Image 1', 'AMZ Master Image 1', 'Amazon Master Image 1'), 
+            getVal(masterReferenceRow, 'AMZ IMG 2', 'Image 2', 'image 2', 'AMZ Image 2', 'AMZ Master Image 2', 'Amazon Master Image 2'), 
+            getVal(masterReferenceRow, 'AMZ IMG 3', 'Image 3', 'image 3', 'AMZ Image 3', 'AMZ Master Image 3', 'Amazon Master Image 3'),
+            getVal(masterReferenceRow, 'AMZ IMG 4', 'Image 4', 'image 4', 'AMZ Master Image 4', 'Amazon Master Image 4'), 
+            getVal(masterReferenceRow, 'AMZ IMG 5', 'Image 5', 'image 5', 'AMZ Master Image 5', 'Amazon Master Image 5'), 
+            getVal(masterReferenceRow, 'AMZ IMG 6', 'Image 6', 'image 6', 'AMZ Master Image 6', 'Amazon Master Image 6'),
+            getVal(masterReferenceRow, 'AMZ IMG 7', 'Image 7', 'image 7', 'AMZ Master Image 7', 'Amazon Master Image 7'),
+            getVal(masterReferenceRow, 'AMZ IMG 8', 'Image 8', 'image 8', 'AMZ Master Image 8', 'Amazon Master Image 8'),
+            getVal(masterReferenceRow, 'AMZ IMG 9', 'Image 9', 'image 9', 'AMZ Master Image 9', 'Amazon Master Image 9'),
+            getVal(masterReferenceRow, 'AMZ IMG 10', 'Image 10', 'image 10', 'AMZ Master Image 10', 'Amazon Master Image 10'),
+            getVal(row, `AMZ IMG 1${suffix}`, `Image 1${suffix}`), 
+            getVal(row, `AMZ IMG 2${suffix}`, `Image 2${suffix}`)
           ].filter(Boolean),
       price: getVal(row, 'Price', 'price'),
       shipping: getVal(row, 'Shipping', 'shipping', 'Shipping Time', `Shipping ${langCode}`, `Shipping Time ${langCode}`),
@@ -290,6 +327,7 @@ export default function App() {
         identifier,
         marketplace,
         auditResult: result.auditResult,
+        liveData: result.liveData,
         masterData
       };
 
@@ -374,19 +412,11 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2">
               <button 
-                onClick={clearSheet}
-                disabled={isClearing || auditing !== null}
-                className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold px-4 py-2 rounded-lg transition-all disabled:opacity-50 flex items-center gap-2"
-              >
-                {isClearing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                Clear Sheet
-              </button>
-              <button 
                 onClick={runRangeAudit}
                 disabled={data.length === 0 || auditing !== null || isClearing}
                 className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition-all shadow-lg shadow-indigo-100 disabled:opacity-50 flex items-center gap-2"
               >
-                {auditing !== null ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                {auditing !== null || isClearing ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
                 Audit Range
               </button>
             </div>
@@ -547,11 +577,11 @@ export default function App() {
                           <div className="flex items-center justify-end gap-2">
                             <button 
                               onClick={() => runAudit(idx)}
-                              disabled={auditing === idx.toString()}
+                              disabled={auditing === idx.toString() || isClearing}
                               className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
                               title="Run Audit"
                             >
-                              {auditing === idx.toString() ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                              {auditing === idx.toString() || (isClearing && selectedRow !== idx) ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
                             </button>
                             <button 
                               onClick={() => setSelectedRow(selectedRow === idx ? null : idx)}
@@ -579,9 +609,10 @@ export default function App() {
                                   <p className="text-slate-500">Run audit to see detailed comparison</p>
                                   <button 
                                     onClick={() => runAudit(idx)}
-                                    className="mt-4 text-indigo-600 font-medium hover:underline"
+                                    disabled={auditing !== null || isClearing}
+                                    className="mt-4 text-indigo-600 font-medium hover:underline disabled:opacity-50"
                                   >
-                                    Start Audit Now
+                                    {isClearing ? 'Clearing Sheet...' : 'Start Audit Now'}
                                   </button>
                                 </div>
                               ) : (
@@ -642,7 +673,14 @@ export default function App() {
                                       </div>
                                       <div className="p-4 bg-white rounded-xl border border-slate-200">
                                         <div className="text-xs text-slate-400 mb-1">Shipping</div>
-                                        <div className="text-sm font-bold text-indigo-600">{auditResults[idx].liveData.shipping || 'N/A'}</div>
+                                        <div className="flex items-center justify-between">
+                                          <div className="text-sm font-bold text-indigo-600">{auditResults[idx].liveData.shipping || 'N/A'}</div>
+                                          {auditResults[idx].liveData.shippingDays !== "N/A" && (
+                                            <div className="bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                              +{auditResults[idx].liveData.shippingDays} Days
+                                            </div>
+                                          )}
+                                        </div>
                                         <div className="text-[10px] text-slate-400 mt-1 truncate" title={auditResults[idx].liveData.rawShipping}>
                                           Live: {auditResults[idx].liveData.rawShipping || 'N/A'}
                                         </div>
@@ -975,7 +1013,10 @@ function ComparisonItem({ label, master, live, similarity, status, isLongText = 
             <div className={`text-xs p-3 bg-white rounded-xl border border-slate-200 font-medium leading-relaxed ${isLongText && !expanded ? 'line-clamp-3' : ''} ${!isMatch && !isImage && !isAPlusImages && !isAPlusData ? 'border-red-100 bg-red-50/50' : 'text-slate-700'}`}>
               {(isImage || isAPlusImages || isAPlusData) ? (
                 <div className="space-y-2">
-                  <p className="text-[10px] text-slate-500 italic mb-2">Standard description missing. Showing A+ Content:</p>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[10px] text-slate-500 italic">Standard description missing. Showing A+ Content:</p>
+                    <span className="bg-green-100 text-green-700 text-[9px] font-bold px-2 py-0.5 rounded-full">A+ CONTENT AVAILABLE</span>
+                  </div>
                   
                   {aPlusText && (
                     <div className="mb-4 p-2 bg-slate-50 rounded border border-slate-100 text-[11px] whitespace-pre-wrap max-h-[200px] overflow-y-auto">
@@ -992,7 +1033,18 @@ function ComparisonItem({ label, master, live, similarity, status, isLongText = 
                   )}
                 </div>
               ) : (
-                isMatch ? (live || <span className="italic text-slate-300">Not Found</span>) : <HighlightDiff master={master} live={live} />
+                <div className="space-y-3">
+                  {isMatch ? (live || <span className="italic text-slate-300">Not Found</span>) : <HighlightDiff master={master} live={live} />}
+                  
+                  {/* If this is the description row and A+ content was found, show it here too if standard description exists */}
+                  {label === 'Description' && !isMatch && !isImage && live && (
+                    <div className="mt-2 pt-2 border-t border-slate-100">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[9px] font-bold text-green-600 bg-green-50 px-1.5 py-0.5 rounded uppercase">A+ content detected</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
