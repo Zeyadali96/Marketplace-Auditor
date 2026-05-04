@@ -132,7 +132,7 @@ app.post("/api/audit/amazon", async (req, res) => {
 
     try {
       console.log(`Auditing Amazon ${asin} on ${domain} (Target Zip: ${locConfig.zip})...`);
-      await page.goto(url, { waitUntil: 'load', timeout: 70000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
       
       try {
         const cookieButtons = ['#sp-cc-accept', 'input[name="accept"]', '#cookie-accept', '#accept-cookies', '.a-button-inner input[data-action="accept-cookies"]'];
@@ -163,7 +163,7 @@ app.post("/api/audit/amazon", async (req, res) => {
             
             // Wait for popover to appear - use broader selector for input
             // Sometimes it's a different popover or needs a moment
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(600);
             const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="code"], input[name="zipCode"]';
             const inputVisible = await page.waitForSelector(zipInputSelector, { state: 'visible', timeout: 15000 }).catch(() => null);
             
@@ -176,13 +176,13 @@ app.post("/api/audit/amazon", async (req, res) => {
                 }
               }, zipInputSelector);
               
-              await page.type(zipInputSelector, locConfig.zip, { delay: 100 });
+              await page.type(zipInputSelector, locConfig.zip, { delay: 60 });
               
               const applyBtn = '#GLUXZipUpdate input[type="submit"], #GLUXZipUpdate > span > input, #GLUXZipUpdate_Buttons input, #GLUXZipUpdate input.a-button-input, #GLUXZipUpdate_Buttons span.a-button-inner input';
               await page.click(applyBtn).catch(() => null);
               
               // CRITICAL: Wait 1.5s for backend to register zip
-              await page.waitForTimeout(2000);
+              await page.waitForTimeout(1200);
               
               const confirmBtn = '#GLUXConfirmClose, #GLUXConfirmResponse, input[data-action="GLUXConfirmResponse"], .a-popover-footer input, #GLUXConfirmClose input, .a-popover-footer span.a-button-inner input';
               const confirmBtnVisible = await page.waitForSelector(confirmBtn, { timeout: 8000 }).catch(() => null);
@@ -190,8 +190,7 @@ app.post("/api/audit/amazon", async (req, res) => {
                 await page.click(confirmBtn).catch(() => null);
               }
               
-              await page.waitForTimeout(1000);
-              await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => null);
+              await page.waitForTimeout(600);
             } else {
               console.warn("Zip input popover never appeared.");
             }
@@ -267,44 +266,91 @@ app.post("/api/audit/amazon", async (req, res) => {
     
     const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
-    const uniqueImages: string[] = [];
+    // --- 7. Hardened Image Extraction ---
+    const imageMap = new Map<string, string>();
+
+    const getNormalizedInfo = (url: string | undefined) => {
+      if (!url || typeof url !== "string" || url.length < 15) return null;
+
+      // 1. Clean query strings and normalize protocol/trim
+      let cleaned = url.split("?")[0].trim();
+      if (cleaned.startsWith("//")) cleaned = "https:" + cleaned;
+      cleaned = cleaned.replace(/^http:/, "https:");
+
+      // 2. Aggressively clean Amazon modifiers (e.g., ._AC_SX679_.)
+      // These can appear in various formats. Stripping them reveals the base image URL.
+      cleaned = cleaned.replace(/\._[a-zA-Z0-9,_-]+_\.?/g, ".");
+      cleaned = cleaned.replace(/\.V[0-9]+_\.?/g, ".");
+      cleaned = cleaned.replace(/\.(V|SS|SX|SY|AC|SR|SL|UL|CLa|SR|SS|SX|SY|UL|CLa)[0-9,s]+_\./g, ".");
+      cleaned = cleaned.replace(/\.(V|SS|SX|SY|AC|SR|SL|UL|CLa|SR|SS|SX|SY|UL|CLa)[0-9,s]+\./g, ".");
+
+      // 3. Identify the Amazon Image ID block for identity tracking
+      const idMatch = cleaned.match(/\/images\/(I|W|S|G)\/([^\.\/]+)/) || cleaned.match(/\/images\/([^\.\/]+)\./);
+      if (!idMatch) return null;
+
+      const baseId = ((idMatch.length > 2 ? idMatch[2] : idMatch[1]) as string).replace(/\.+$/, "");
+      
+      // Exclude suspected Swatch images, generic icons or play buttons
+      if (baseId.includes("SWCH") || cleaned.includes("_SW") || baseId.startsWith("ss_") || cleaned.includes("play-button")) return null;
+
+      return { baseId, url: cleaned };
+    };
+
+    // 1. Always prioritize the main hero image first as part of insertion order
+    const mainHeroUrl = $("#landingImage").attr("data-old-hires") || $("#landingImage").attr("src");
+    const heroInfo = getNormalizedInfo(mainHeroUrl);
     
-    // 1. Try to extract from colorImages JSON (most accurate)
-    const scriptContent = $('script').map((_, el) => $(el).html()).get().join('\n');
-    const colorImagesMatch = scriptContent.match(/'colorImages':\s*({.+?}),?\n/s) || 
-                             scriptContent.match(/"colorImages":\s*({.+?}),?\n/s);
+    console.log("=== AMAZON IMAGE EXTRACTION DEBUG ===");
+    console.log("Hero URL:", mainHeroUrl);
+    console.log("Hero Info:", heroInfo);
     
-    if (colorImagesMatch) {
-      try {
-        const colorImages = JSON.parse(colorImagesMatch[1]);
-        const initialImages = colorImages.initial || [];
-        initialImages.forEach((img: any) => {
-          const url = img.hiRes || img.large || img.main?.url;
-          if (url) uniqueImages.push(url);
-        });
-      } catch (e) { /* ignore parse error */ }
+    if (heroInfo) {
+      imageMap.set(heroInfo.baseId, heroInfo.url);
+      console.log("Hero added to map with baseId:", heroInfo.baseId);
     }
 
-    // 2. Fallback to imageBlock specific selectors if JSON extraction failed or is incomplete
-    if (uniqueImages.length === 0) {
-      $('#imageBlock img, #altImages li.imageThumbnail img, #main-image-container img').each((_, el) => {
-        let src = $(el).attr('src') || $(el).attr('data-old-hires') || $(el).attr('data-a-dynamic-image');
-        
-        if (src && src.startsWith('{')) {
-          try {
-            const urls = Object.keys(JSON.parse(src));
-            if (urls.length) src = urls[0];
-          } catch(e) { src = null; }
-        }
+    // 2. Gather thumbnails while ignoring duplicates of the hero or other images
+    let thumbCount = 0;
+    $("#altImages li.imageThumbnail:not(.videoThumbnail) img, .imageThumbnail img, .altImages img").not("#landingImage").each((_, el) => {
+      thumbCount++;
+      const elemId = $(el).attr("id");
+      const src = $(el).attr("data-old-hires") || $(el).attr("src");
+      
+      console.log(`Thumbnail ${thumbCount} (id: ${elemId || 'none'}):`, src);
+      
+      if (!src || src.includes("pixel.gif") || src.includes("play-button-overlay") || src.includes("transparent-pixel")) {
+        console.log("  -> SKIP: pixel/placeholder");
+        return;
+      }
 
-        if (src && typeof src === 'string') {
-          const cleaned = src.replace(/\._[A-Z0-9,_-]+\./g, '.');
-          if (cleaned.includes('media-amazon.com/images/I/')) {
-            uniqueImages.push(cleaned);
-          }
-        }
-      });
-    }
+      // Re-applying the surgical fix for hero duplication via raw src check
+      const rawSrcInfo = getNormalizedInfo($(el).attr("src"));
+      if (heroInfo && rawSrcInfo && rawSrcInfo.baseId === heroInfo.baseId) {
+        console.log("  -> SKIP: matches hero baseId (raw src check)");
+        return;
+      }
+
+      const info = getNormalizedInfo(src);
+      if (!info) {
+        console.log("  -> SKIP: null info");
+        return;
+      }
+      
+      console.log(`  -> baseId: ${info.baseId}`);
+      
+      if (imageMap.has(info.baseId)) {
+        console.log("  -> SKIP: already in map");
+        return;
+      }
+      
+      console.log("  -> ADDED to map");
+      imageMap.set(info.baseId, info.url);
+    });
+
+    const uniqueImages = Array.from(imageMap.values());
+    console.log("\nFinal unique images count:", uniqueImages.length);
+    console.log("Final baseIds:", Array.from(imageMap.keys()));
+    console.log("=== END DEBUG ===\n");
 
     const amazonBullets: string[] = [];
     const bulletSelectors = [
@@ -486,129 +532,76 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
 }
 
 // --- Bol.com Helpers ---
-const BOL_USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-];
-
-async function goToProduct(page: any, searchTerm: string): Promise<string> {
+async function goToProduct(page: any, searchTerm: string) {
   const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(searchTerm)}`;
-  
-  const ua = BOL_USER_AGENTS[Math.floor(Math.random() * BOL_USER_AGENTS.length)];
-  const fetchOpts = {
-    headers: {
-      'User-Agent': ua,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache'
-    }
-  };
+  console.log(`🔎 Searching Bol.com → ${searchUrl}`);
 
-  let productUrl: string | null = null;
-  let searchHtml = '';
-
-  console.log(`🔎 Attempting Bol.com direct search → ${searchUrl}`);
   try {
-    const searchRes = await fetch(searchUrl, fetchOpts);
-    searchHtml = await searchRes.text();
-    const lowerHtml = searchHtml.toLowerCase();
-    const isWaf = lowerHtml.includes('ip adres is geblokkeerd') || 
-                  lowerHtml.includes('akamai') || 
-                  lowerHtml.includes('rustig aan speed racer') ||
-                  (searchHtml.length < 5000 && lowerHtml.includes('<title>bol</title>'));
-
-    if (!isWaf) {
-      await page.setContent(searchHtml);
-      productUrl = await page.evaluate(() => {
-        let el = document.querySelector('a.product-title, a.product-item--row__title, a[data-test="product-title"]');
-        if (!el) el = document.querySelector('.product-list a[href*="/p/"]');
-        if (!el) {
-            const links = Array.from(document.querySelectorAll('a[href*="/p/"]'));
-            el = links.find(a => {
-               const href = (a as HTMLAnchorElement).href;
-               return href && !href.includes('review') && !href.includes('login') && href.includes('/p/');
-            }) || null;
-        }
-        return el ? (el as HTMLAnchorElement).href : null;
-      });
-    } else {
-      console.warn('⚠️ Bol.com search blocked (WAF). Trying DuckDuckGo fallback...');
-    }
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await page.waitForTimeout(1_500);
   } catch (e) {
-    console.warn(`⚠️ Direct search failed: ${(e as Error).message}. Trying DuckDuckGo fallback...`);
+    console.log(`⚠️ Navigation warning: ${(e as Error).message}`);
   }
 
-  // Fallback to DuckDuckGo if direct search failed or was blocked
-  if (!productUrl) {
-    console.log(`🔎 Searching DDG for site:bol.com ${searchTerm}`);
-    try {
-      const ddgUrl = `https://html.duckduckgo.com/html/?q=site:bol.com+${encodeURIComponent(searchTerm)}`;
-      const ddgRes = await fetch(ddgUrl, { headers: { 'User-Agent': ua } });
-      const ddgHtml = await ddgRes.text();
-      await page.setContent(ddgHtml);
+  const title = await page.title().catch(() => '');
+  if (title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent')) {
+    console.log('🪪 Cookie banner detected – clicking “Akkoord”.');
+    await page
+      .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
+      .catch(() => null);
+    await page.waitForTimeout(1_200);
+  }
 
-      productUrl = await page.evaluate(() => {
-        const links = Array.from(document.querySelectorAll('a.result__snippet, a.result__url'));
-        for (const a of links) {
-          try {
-            const href = (a as HTMLAnchorElement).href;
-            if (href.includes('bol.com') && href.includes('/p/')) {
-              // Extract from DDG redirect if needed
-              if (href.includes('uddg=')) {
-                const url = new URL(href);
-                const uddg = url.searchParams.get('uddg');
-                if (uddg) return decodeURIComponent(uddg);
-              }
-              return href;
-            }
-          } catch (e) {}
-        }
-        return null;
-      });
-    } catch (e) {
-      console.error(`❌ DDG fallback also failed: ${(e as Error).message}`);
+  let content = await page.content().catch(() => '');
+  if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
+    console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
+    await page.waitForTimeout(10_000);
+    const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
+    await page.setViewportSize({ width: newWidth, height: 844 });
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
+    
+    // Test again
+    content = await page.content().catch(() => '');
+    if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
+      throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
     }
   }
 
-  if (!productUrl) {
-    throw new Error(`WAF_BLOCKED: Bol.com results blocked and fallback search failed for EAN ${searchTerm}.`);
+  if (!page.url().includes('/p/')) {
+    // Collect specific hrefs that match a product url format
+    const productHref = await page.evaluate(() => {
+      // Find elements acting as product links
+      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a[data-test="product-title"]'));
+      let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
+      
+      if (!target) {
+        // Fallback to any link containing '/p/' inside main or body
+        const allLinks = Array.from(document.querySelectorAll('a'));
+        target = allLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
+      }
+      return target ? (target as HTMLAnchorElement).href : null;
+    }).catch(() => null);
+
+    if (productHref) {
+      console.log(`🖱️ Navigating to product URL directly: ${productHref}`);
+      const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
+    await page.waitForTimeout(1_500);
+    } else {
+      const dbgTitle = await page.title().catch(() => '');
+      const dbgUrl = page.url();
+      throw new Error(`No product link found on the Bol.com results page. Title: "${dbgTitle}", URL: "${dbgUrl}"`);
+    }
   }
-
-  // Ensure leading domain if it's relative
-  if (productUrl.startsWith('about:blank')) {
-       productUrl = productUrl.replace('about:blank', 'https://www.bol.com');
-  } else if (!productUrl.startsWith('http')) {
-       productUrl = 'https://www.bol.com' + (productUrl.startsWith('/') ? productUrl : '/' + productUrl);
-  }
-
-  console.log(`🖱️ Fetching product URL directly: ${productUrl}`);
-  const productRes = await fetch(productUrl, fetchOpts).catch(err => {
-      throw new Error(`Product fetch failed: ${err.message}`);
-  });
-  
-  const productHtml = await productRes.text();
-  const prodLower = productHtml.toLowerCase();
-  const isProdWaf = prodLower.includes('ip adres is geblokkeerd') || 
-                    prodLower.includes('akamai') ||
-                    (productHtml.length < 5000 && prodLower.includes('<title>bol</title>'));
-
-  if (isProdWaf) {
-     throw new Error("WAF_BLOCKED: Bol.com blocked the product page request even via direct link.");
-  }
-
-  await page.setContent(productHtml);
-  return productUrl;
 }
 
 async function extractCatalogue(page: any) {
   await page.waitForLoadState('load', { timeout: 45_000 }).catch(() => null);
   await page.waitForLoadState('networkidle', { timeout: 45_000 }).catch(() => null);
-  await page.waitForTimeout(2_000);
+  await page.waitForTimeout(1_200);
 
   await page.mouse.wheel(0, 400);
-  await page.waitForTimeout(2_000);
+  await page.waitForTimeout(1_200);
 
   return await page.evaluate(() => {
     let title = '';
@@ -687,19 +680,28 @@ async function extractCatalogue(page: any) {
     // Price extraction
     let price = 'N/A';
     const pageHtml = document.documentElement.innerHTML;
-    const priceMatch = pageHtml.match(/"offers"\s*:\s*\{[^}]*"@type"\s*:\s*"Offer"[^}]*"price"\s*:\s*"([\d.]+)"[^}]*"priceCurrency"\s*:\s*"EUR"/);
-    if (priceMatch) {
-      price = priceMatch[1];
+    
+    // 1. Try to find price in JSON-LD (Search for the "offers" block mentioned by user)
+    const jsonLdMatch = pageHtml.match(/"offers"\s*:\s*\{[^}]*"@type"\s*:\s*"Offer"[^}]*"price"\s*:\s*"([\d.]+)"/) ||
+                        pageHtml.match(/"offers"\s*:\s*\{[^}]*"@type"\s*:\s*"Offer"[^}]*"price"\s*:\s*([\d.]+)/);
+    
+    if (jsonLdMatch) {
+      price = jsonLdMatch[1];
     } else {
-      // Fallback
-      const m = pageHtml.match(/"price"\s*:\s*([\d.]+)\s*,\s*"priceCurrency"\s*:\s*"EUR"/);
-      if (m) price = m[1];
+      // Fallback: Other meta patterns if the direct "offers" block isn't exactly as expected
+      const metaPriceMatch = pageHtml.match(/"price"\s*:\s*"([\d.]+)"\s*,\s*"priceCurrency"\s*:\s*"EUR"/) ||
+                             pageHtml.match(/"price"\s*:\s*([\d.]+)\s*,\s*"priceCurrency"\s*:\s*"EUR"/);
+      if (metaPriceMatch) price = metaPriceMatch[1];
     }
 
+    // 2. Last resort: text-based extraction from the UI (Normal mentioned lines)
     if (price === 'N/A') {
-      const all = document.body.innerText;
-      const m = all.match(/€\s*([\d.]+,\d{2})/);
-      if (m) price = m[1].replace(',', '.');
+      const allText = document.body.innerText;
+      // Look for € symbol followed by digits, handling European comma decimals
+      const euroMatch = allText.match(/€\s*([\d.]+,\d{2})/) || allText.match(/€\s*([\d.]+)/);
+      if (euroMatch) {
+        price = euroMatch[1].replace(',', '.').trim();
+      }
     }
 
     let shipping = 'N/A';
@@ -928,7 +930,7 @@ app.post("/api/audit/bol", async (req, res) => {
 
     const page = await context.newPage();
     
-    const productUrl = await goToProduct(page, ean);
+    await goToProduct(page, ean);
     const data = await extractCatalogue(page);
     
     const bolShippingDays = calculateBolShippingDays(data.shipping);
@@ -938,7 +940,7 @@ app.post("/api/audit/bol", async (req, res) => {
       price: data.price,
       description: data.description,
       images: data.images,
-      url: productUrl,
+      url: page.url(),
       hasAPlus: false,
       shipping: bolShippingDays !== "N/A" ? `${bolShippingDays} days` : data.shipping,
       shippingDays: bolShippingDays,
@@ -1058,7 +1060,7 @@ app.post("/api/sheets/save-audit", async (req, res) => {
     }
 
     if (liveData && liveData.images && Array.isArray(liveData.images)) {
-      liveData.images.slice(0, 10).forEach((url: string, i: number) => {
+      liveData.images.slice(1, 11).forEach((url: string, i: number) => {
         const formula = url ? `=IMAGE("${url}")` : '';
         const index = i + 1;
         resultRow[`${pfx} Live Image ${index}`] = formula;
@@ -1185,7 +1187,7 @@ app.post("/api/sheets/batch-save-audit", async (req, res) => {
       }
 
       if (liveData && Array.isArray(liveData.images)) {
-        liveData.images.slice(0, 10).forEach((url: string, i: number) => {
+        liveData.images.slice(1, 11).forEach((url: string, i: number) => {
           const formula = url ? `=IMAGE("${url}")` : '';
           row[`${pfx} Live Image ${i + 1}`] = formula;
           row[`${shortPfx} Live Image ${i + 1}`] = formula;
