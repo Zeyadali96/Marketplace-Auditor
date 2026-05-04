@@ -534,20 +534,9 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
 // --- Bol.com Helpers ---
 async function goToProduct(page: any, searchTerm: string) {
   const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(searchTerm)}`;
-  
-  // 1. Initial attempt
-  try {
-    console.log(`🔎 Auditing Bol.com → ${searchTerm}`);
-    // Go to homepage first to establish session/cookies if directly searching fails
-    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => null);
-    await page.waitForTimeout(Math.random() * 1000 + 500);
-    
-    // Accept cookies on home page if present
-    await page.click('button#js-accept-all-cookies, [data-test="consent-assign-all"]').catch(() => null);
-    await page.waitForTimeout(Math.random() * 800 + 400);
+  console.log(`🔎 Searching Bol.com → ${searchUrl}`);
 
-    // Now go to search
-    console.log(`🔎 Searching Bol.com → ${searchUrl}`);
+  try {
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     await page.waitForTimeout(1_500);
   } catch (e) {
@@ -565,39 +554,16 @@ async function goToProduct(page: any, searchTerm: string) {
 
   let content = await page.content().catch(() => '');
   if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
-    console.warn('🚫 IP blocked or Akamai challenge – attempting deep stealth retry.');
+    console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
+    await page.waitForTimeout(10_000);
+    const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
+    await page.setViewportSize({ width: newWidth, height: 844 });
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
     
-    // Deep stealth: Wait, clear context by going to a neutral page, then retry with extreme caution
-    await page.waitForTimeout(12_000);
-    await page.goto('about:blank');
-    
-    // Change viewport significantly to a common mobile one to look different
-    await page.setViewportSize({ width: 390, height: 844 });
-    
-    // Use a different search pattern: go to home, then use the search input if possible
-    try {
-      await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 45_000 });
-      await page.waitForTimeout(2000);
-      
-      // Look for search input
-      const searchBox = await page.waitForSelector('input[name="searchtext"], #searchfor', { timeout: 5000 }).catch(() => null);
-      if (searchBox) {
-        await searchBox.fill(searchTerm);
-        await page.waitForTimeout(Math.random() * 500 + 200);
-        await page.keyboard.press('Enter');
-        await page.waitForLoadState('domcontentloaded', { timeout: 45_000 });
-      } else {
-        // Fallback to direct URL if search box not found
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-      }
-    } catch (err) {
-      console.error('Retry failed:', err);
-    }
-    
-    // Final check
+    // Test again
     content = await page.content().catch(() => '');
     if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
-      throw new Error("WAF_BLOCKED: Bol.com blocked the request. Their system detected the bot despite retries.");
+      throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
     }
   }
 
@@ -939,24 +905,16 @@ app.post("/api/audit/bol", async (req, res) => {
     }
     
     browser = await chromiumExtra.launch(launchOpts);
-    
-    const userAgents = [
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
-    ];
-    const selectedUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-
     const context = await browser.newContext({
-      userAgent: selectedUA,
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
       viewport: { width: Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366, height: Math.floor(Math.random() * (1080 - 768 + 1)) + 768 },
       locale: 'nl-NL',
       extraHTTPHeaders: {
         'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="123", "Chromium";v="123"',
+        'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
         'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': selectedUA.includes('Windows') ? '"Windows"' : (selectedUA.includes('Macintosh') ? '"macOS"' : '"Linux"'),
+        'sec-ch-ua-platform': '"Windows"',
         'sec-fetch-dest': 'document',
         'sec-fetch-mode': 'navigate',
         'sec-fetch-site': 'none',
