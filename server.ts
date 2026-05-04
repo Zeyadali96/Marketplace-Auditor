@@ -79,7 +79,7 @@ app.post("/api/audit/amazon", async (req, res) => {
       };
     }
 
-    browser = await chromium.launch(launchOptions).catch(err => {
+    browser = await chromiumExtra.launch(launchOptions).catch(err => {
       console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
       throw new Error(`Browser launch failed. Error: ${err.message}`);
     });
@@ -99,7 +99,6 @@ app.post("/api/audit/amazon", async (req, res) => {
     const locConfig = amazonLocalizationMap[domain] || { locale: 'en-US', timezoneId: 'America/New_York', city: 'NYC', zip: '10001', currency: 'USD', deliverTo: ['Deliver to'] };
 
     const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       viewport: { width: 1920, height: 1080 },
       locale: locConfig.locale,
       timezoneId: locConfig.timezoneId,
@@ -537,6 +536,10 @@ async function goToProduct(page: any, searchTerm: string) {
   console.log(`🔎 Searching Bol.com → ${searchUrl}`);
 
   try {
+    // Human-like interaction before navigation
+    await page.mouse.move(Math.random() * 500, Math.random() * 500);
+    await page.waitForTimeout(Math.random() * 1000 + 500);
+    
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     await page.waitForTimeout(1_500);
   } catch (e) {
@@ -906,15 +909,11 @@ app.post("/api/audit/bol", async (req, res) => {
     
     browser = await chromiumExtra.launch(launchOpts);
     const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-      viewport: { width: Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366, height: Math.floor(Math.random() * (1080 - 768 + 1)) + 768 },
+      viewport: { width: 1920, height: 1080 },
       locale: 'nl-NL',
       extraHTTPHeaders: {
         'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
         'sec-fetch-dest': 'document',
         'sec-fetch-mode': 'navigate',
         'sec-fetch-site': 'none',
