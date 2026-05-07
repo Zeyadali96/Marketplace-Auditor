@@ -638,66 +638,29 @@ async function goToProduct(page: any, searchTerm: string) {
   let content = await page.content().catch(() => '');
 
   // Handle cookie banner or interstitial
-  const handleConsent = async () => {
-    const currentTitle = await page.title().catch(() => '');
-    const currentContent = await page.content().catch(() => '');
-    if (currentTitle.toLowerCase() === 'bol' || currentTitle.toLowerCase().includes('privacy') || currentTitle.toLowerCase().includes('cookies') || currentTitle.toLowerCase().includes('consent') || currentContent.includes('data-test="consent-modal"')) {
-      console.log('🪪 Cookie banner or interstitial detected – attempting to clear.');
-      await page
-        .click('button#js-accept-all-cookies, [data-test="consent-assign-all"], #js-cookie-consent-accept, button.ui-btn--primary')
-        .catch(() => null);
-      await page.waitForTimeout(2000);
-      
-      // If still stuck on "bol" title, try clicking anything that looks like an "Accept" button
-      const stillStuck = await page.title().catch(() => '') === 'bol';
-      if (stillStuck) {
-        await page.evaluate(() => {
-          const buttons = Array.from(document.querySelectorAll('button'));
-          const acceptBtn = buttons.find(b => b.textContent?.includes('Akkoord') || b.textContent?.includes('accepteren'));
-          if (acceptBtn) (acceptBtn as HTMLButtonElement).click();
-        }).catch(() => null);
-        await page.waitForTimeout(2000);
-      }
-    }
-  };
-
-  await handleConsent();
-  content = await page.content().catch(() => '');
-  title = await page.title().catch(() => '');
-
-  // If we are still seemingly on an empty/bol page, retry navigation once
-  if (title.toLowerCase() === 'bol' || content.length < 5000) {
-    console.log('🔄 Still on minimal page, retrying navigation...');
-    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
-    await page.waitForTimeout(2500);
-    await handleConsent();
+  if (title.toLowerCase() === 'bol' || title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent') || content.includes('data-test="consent-modal"')) {
+    console.log('🪪 Cookie banner or interstitial detected – clicking “Akkoord”.');
+    await page
+      .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
+      .catch(() => null);
+    await page.waitForTimeout(2_000);
+    // Refresh title/content
+    title = await page.title().catch(() => '');
     content = await page.content().catch(() => '');
   }
 
   if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
-    console.warn('🚫 IP blocked or Akamai challenge detected. Attempting deep retry with randomized profile...');
-    await page.waitForTimeout(Math.floor(Math.random() * 5000) + 5000);
+    console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
+    await page.waitForTimeout(10_000);
+    const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
+    await page.setViewportSize({ width: newWidth, height: 844 });
+    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
+    await page.waitForTimeout(2_500);
     
-    // Switch to a new random UA string and viewport
-    const agents = [
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
-      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-    ];
-    await page.setUserAgent(agents[Math.floor(Math.random() * agents.length)]).catch(() => null);
-    
-    const newWidth = Math.floor(Math.random() * (430 - 360 + 1)) + 360;
-    await page.setViewportSize({ width: newWidth, height: 844 }).catch(() => null);
-
-    await page.goto(searchUrl, { waitUntil: 'load', timeout: 60_000 }).catch(() => null);
-    await page.waitForTimeout(3500);
-    await handleConsent();
-    
+    // Test again
     content = await page.content().catch(() => '');
-    title = await page.title().catch(() => '');
-
     if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
-      throw new Error(`WAF_BLOCKED: Bol.com is currently blocking this IP address. Details: ${title}`);
+      throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
     }
   }
 
@@ -707,25 +670,18 @@ async function goToProduct(page: any, searchTerm: string) {
   }
 
   if (!page.url().includes('/p/')) {
-    // Scroll down a bit to trigger lazy-load if needed
-    await page.evaluate(() => window.scrollBy(0, 500)).catch(() => null);
-    await page.waitForTimeout(1000);
-
     // Collect specific hrefs that match a product url format
     const productHref = await page.evaluate(() => {
       // Find elements acting as product links
-      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a.product-item--link, a[data-test="product-title"], .product-item a'));
-      let target = titleLinks.find(a => {
-        const href = (a as HTMLAnchorElement).href;
-        return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/');
-      });
+      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a[data-test="product-title"]'));
+      let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
       
       if (!target) {
         // Fallback to any link containing '/p/' inside main or body
         const allLinks = Array.from(document.querySelectorAll('a'));
         target = allLinks.find(a => {
           const href = (a as HTMLAnchorElement).href;
-          return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/') && !href.includes('account');
+          return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/');
         });
       }
       return target ? (target as HTMLAnchorElement).href : null;
@@ -890,42 +846,53 @@ async function extractCatalogue(page: any) {
     }
 
     const imgs: string[] = [];
+    
+    // 1. Always prioritize the main image
+    const mainSel = [
+      '[data-test="product-main-image"] img',
+      '.js_main_product_image',
+      '.pdp-main-image img',
+      'img.js_main_product_image',
+      '[data-test="pdp-main-image"] img'
+    ];
+    mainSel.forEach(sel => {
+      const img = document.querySelector(sel) as HTMLImageElement | null;
+      if (img && img.src && img.src.startsWith('http')) {
+        imgs.push(img.src);
+      } else if (img && img.getAttribute('data-src')) {
+        const dsrc = img.getAttribute('data-src');
+        if (dsrc && dsrc.startsWith('http')) imgs.push(dsrc);
+      }
+    });
+
+    // 2. Extract thumbnails and other product images
     const allImages = Array.from(document.querySelectorAll('img'));
     allImages.forEach(img => {
       const alt = img.getAttribute('alt') || '';
+      const src = img.src || img.getAttribute('data-src') || '';
+      
       if (alt.includes('Afbeelding nummer')) {
-        const src = img.src || img.getAttribute('data-src') || '';
         if (src && src.startsWith('http')) imgs.push(src);
       }
     });
 
-    if (imgs.length === 0) {
-      // Fallback
-      const mainSel = [
-        '[data-test="product-main-image"] img',
-        '.js_main_product_image',
-        '.pdp-main-image img',
-        'img.js_main_product_image'
-      ];
-      mainSel.forEach(sel => {
-        const img = document.querySelector(sel) as HTMLImageElement | null;
-        if (img && img.src && img.src.startsWith('http')) imgs.push(img.src);
+    // 3. Fallback for thumbnails if the "Afbeelding nummer" pattern is missing
+    const thumbSel = [
+      '.js_product_media_items img',
+      '.pdp-images img',
+      '.js_image_container img',
+      '.product-images__item img',
+      '[data-test="pdp-thumbnails"] img'
+    ];
+    thumbSel.forEach(sel => {
+      const thumbs = Array.from(document.querySelectorAll(sel)) as HTMLImageElement[];
+      thumbs.forEach(i => {
+        const src = i.src || i.getAttribute('data-src') || i.getAttribute('src');
+        if (src && (src.includes('media.s-bol.com') || src.startsWith('http'))) {
+          imgs.push(src);
+        }
       });
-
-      const thumbSel = [
-        '.js_product_media_items img',
-        '.pdp-images img',
-        '.js_image_container img',
-        '.product-images__item img'
-      ];
-      thumbSel.forEach(sel => {
-        const thumbs = Array.from(document.querySelectorAll(sel)) as HTMLImageElement[];
-        thumbs.forEach(i => {
-          const src = i.src || i.getAttribute('data-src') || i.getAttribute('src');
-          if (src && src.includes('media.s-bol.com')) imgs.push(src);
-        });
-      });
-    }
+    });
 
     const bulletSel = [
       '[data-test="product-features"] li',
@@ -1212,7 +1179,8 @@ app.post("/api/sheets/save-audit", async (req, res) => {
     }
 
     if (liveData && liveData.images && Array.isArray(liveData.images)) {
-      liveData.images.slice(1, 11).forEach((url: string, i: number) => {
+      const sliceStart = mode === 'bol' ? 0 : 1;
+      liveData.images.slice(sliceStart, sliceStart + 10).forEach((url: string, i: number) => {
         const formula = url ? `=IMAGE("${url}")` : '';
         const index = i + 1;
         resultRow[`${pfx} Live Image ${index}`] = formula;
@@ -1342,7 +1310,8 @@ app.post("/api/sheets/batch-save-audit", async (req, res) => {
       }
 
       if (liveData && Array.isArray(liveData.images)) {
-        liveData.images.slice(1, 11).forEach((url: string, i: number) => {
+        const sliceStart = mode === 'bol' ? 0 : 1;
+        liveData.images.slice(sliceStart, sliceStart + 10).forEach((url: string, i: number) => {
           const formula = url ? `=IMAGE("${url}")` : '';
           row[`${pfx} Live Image ${i + 1}`] = formula;
           row[`${shortPfx} Live Image ${i + 1}`] = formula;
