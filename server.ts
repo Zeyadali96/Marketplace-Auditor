@@ -266,6 +266,15 @@ app.post("/api/audit/amazon", async (req, res) => {
     
     const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
+    // Buybox Owner Extraction
+    let amazonBuyboxOwner = $('#sellerProfileTriggerId').first().text().trim();
+    if (!amazonBuyboxOwner) {
+      amazonBuyboxOwner = $('.offer-display-feature-text-message').first().text().trim();
+    }
+    if (!amazonBuyboxOwner) {
+      amazonBuyboxOwner = $('#merchant-info a').first().text().trim();
+    }
+
     // --- 7. Hardened Image Extraction ---
     const imageMap = new Map<string, string>();
 
@@ -352,26 +361,88 @@ app.post("/api/audit/amazon", async (req, res) => {
     console.log("Final baseIds:", Array.from(imageMap.keys()));
     console.log("=== END DEBUG ===\n");
 
-    const amazonBullets: string[] = [];
+    const bulletSet = new Set<string>();
     const bulletSelectors = [
-      '#feature-bullets ul li',
-      '#featurebullets_feature_div ul li',
-      '.a-unordered-list.a-vertical.a-spacing-mini li',
-      '#productDescription_feature_div ul li',
-      '#feature-bullets-content li',
+      '#feature-bullets ul li:not(:has(ul))', // Only leaf li
+      '#featurebullets_feature_div ul li:not(:has(ul))',
+      '#feature-bullets-content li:not(:has(ul))',
       '[data-feature-name="product-facts"] .a-list-item',
-      '.product-facts-title + .a-unordered-list li',
-      '#product-facts-grid li',
-      '.a-section.a-spacing-medium .a-list-item',
-      '#productFactsDesktopExpander .a-list-item',
-      '.a-expander-content .a-list-item'
+      '.product-facts-title + .a-unordered-list li:not(:has(ul))',
+      '#product-facts-grid li:not(:has(ul))',
+      '#productFactsDesktopExpander .a-list-item'
     ];
+
     $(bulletSelectors.join(', ')).each((_, el) => {
-      const text = $(el).find('span.a-list-item').text().trim() || $(el).text().trim();
-      if (text && !text.includes('Make sure this fits') && !text.includes('Geben Sie Ihr Modell ein') && !text.includes('Sprawdź, czy pasuje') && text.length > 5) {
-        amazonBullets.push(text);
+      const $el = $(el);
+      
+      // 1. Stricter container exclusion to avoid reviews, ads, and legal sections
+      const junkContainers = [
+        '#customerReviews',
+        '#reviews-medley-footer',
+        '#cm-cr-dp-review-list',
+        '.customer_review',
+        '#fbt_x_cl_div',
+        '#legal-disclaimer',
+        '#ad-feedback-form-desktop-feature-bullets_secondary_view_div',
+        '#reviews-image-gallery-container',
+        '#social-proofing-faceout-feature-div',
+        '#dp-ads-center-promo-pc_desktop_view_div',
+        '.cr-widget-FocalReviews',
+        '.a-expander-content.a-expander-partial-collapse-content'
+      ];
+      if ($el.closest(junkContainers.join(', ')).length > 0) {
+        return;
+      }
+
+      // 2. Clone and remove scripts/styles
+      const $clone = $el.clone();
+      $clone.find('script, style, .a-declarative, .a-popover-preload').remove();
+      
+      let text = '';
+      // Try to get the text from the specific span first, then the element itself
+      const $span = $clone.find('span.a-list-item');
+      if ($span.length > 0) {
+        text = $span.first().text().trim();
+      } else {
+        text = $clone.text().trim();
+      }
+      
+      // Remove leading bullets or markers if any
+      text = text.replace(/^[•\-\*\s]+/, '').trim();
+
+      const isJunk = (t: string) => {
+        const lower = t.toLowerCase();
+        return (
+          lower.includes('window.ue') ||
+          lower.includes('if(window.ue)') ||
+          lower.includes('out of 5 stars') ||
+          lower.includes('verified purchase') ||
+          lower.includes('helpful report') ||
+          lower.includes('reviewed in') ||
+          lower.includes('not for sale to persons under') ||
+          lower.includes('16 years of age') ||
+          lower.includes('make sure this fits') ||
+          lower.includes('geben sie ihr modell ein') ||
+          lower.includes('sprawdź, czy pasuje') ||
+          lower.includes('read more') ||
+          lower.includes('customer reviews') ||
+          lower.includes('by placing an order') ||
+          lower.includes('declare that you are') ||
+          lower.includes('used responsibly') ||
+          t.length < 5 ||
+          t.length > 1000 ||
+          /^(\d+)\s+out of\s+5\s+stars/i.test(t) ||
+          /Reviewed in the .* on \d+/.test(t) ||
+          /^\d+ ratings?$/.test(t)
+        );
+      };
+
+      if (text && !isJunk(text)) {
+        bulletSet.add(text);
       }
     });
+
+    const amazonBullets = Array.from(bulletSet);
 
     const variations: string[] = [];
     // Various variation selectors for different categories
@@ -466,6 +537,7 @@ app.post("/api/audit/amazon", async (req, res) => {
       rawShipping: rawShippingTime,
       variations: variations.length,
       hasAPlus: hasAPlus,
+      buyboxOwner: amazonBuyboxOwner,
       images: Array.from(new Set(uniqueImages))
     };
 
@@ -528,7 +600,26 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
 
   if (live.images && live.images.length >= (master.images?.length || 1)) result.images.match = true;
 
+  // Score calculation
+  let scoreValue = 0;
+  if (mode === 'amazon') {
+    if (result.title.match) scoreValue += 30;
+    if (result.description.match) scoreValue += 30;
+    const bulletMatchCount = (result.bullets || []).filter((b: any) => b.match).length;
+    scoreValue += Math.min(bulletMatchCount * 8, 40);
+  } else {
+    if (result.title.match) scoreValue += 50;
+    if (result.description.match) scoreValue += 50;
+  }
+  result.score = scoreValue;
+
   return result;
+}
+
+function getScoreGrade(score: number): string {
+  if (score > 70) return "excellent";
+  if (score >= 50) return "acceptable";
+  return "Needs improvement";
 }
 
 // --- Bol.com Helpers ---
@@ -1030,6 +1121,9 @@ app.post("/api/sheets/save-audit", async (req, res) => {
       'Bullet Points Match': bulletMatchText,
       'Variation': auditResult?.variations?.match ? 'Yes' : 'No',
       'A+ Content': liveData?.hasAPlus ? 'Yes' : 'No',
+      'Buybox Owner': liveData?.buyboxOwner || 'N/A',
+      'Score': auditResult?.score ?? 0,
+      'Score Grade': getScoreGrade(auditResult?.score ?? 0),
       'Price Live': liveData?.price || 'N/A',
       'price live': liveData?.price || 'N/A',
       'Price': liveData?.price || 'N/A',
@@ -1159,6 +1253,9 @@ app.post("/api/sheets/batch-save-audit", async (req, res) => {
         'Bullet Points Match': bulletMatchText,
         'Variation': auditResult?.variations?.match ? 'Yes' : 'No',
         'A+ Content': liveData?.hasAPlus ? 'Yes' : 'No',
+        'Buybox Owner': liveData?.buyboxOwner || 'N/A',
+        'Score': auditResult?.score ?? 0,
+        'Score Grade': getScoreGrade(auditResult?.score ?? 0),
         'Price Live': liveData?.price || 'N/A',
         'price live': liveData?.price || 'N/A',
         'Price': liveData?.price || 'N/A',

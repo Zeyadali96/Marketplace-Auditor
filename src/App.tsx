@@ -671,12 +671,26 @@ export default function App() {
                                       </div>
                                       {mode === 'amazon' && (
                                         <div className="p-4 bg-white rounded-xl border border-slate-200">
+                                          <div className="text-xs text-slate-400 mb-1">Buybox Owner</div>
+                                          <div className="text-sm font-bold text-indigo-600 truncate" title={auditResults[idx].liveData.buyboxOwner}>
+                                            {auditResults[idx].liveData.buyboxOwner || 'N/A'}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {mode === 'amazon' && (
+                                        <div className="p-4 bg-white rounded-xl border border-slate-200">
                                           <div className="text-xs text-slate-400 mb-1">A+ Content</div>
                                           <div className={`text-sm font-bold ${auditResults[idx].liveData.hasAPlus ? 'text-green-600' : 'text-slate-400'}`}>
                                             {auditResults[idx].liveData.hasAPlus ? 'PRESENT' : 'MISSING'}
                                           </div>
                                         </div>
                                       )}
+                                      <div className="p-4 bg-white rounded-xl border border-slate-200">
+                                        <div className="text-xs text-slate-400 mb-1">Score Grade</div>
+                                        <div className={`text-sm font-bold capitalize ${calculateScore(auditResults[idx].auditResult, mode) > 70 ? 'text-green-600' : calculateScore(auditResults[idx].auditResult, mode) >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
+                                          {calculateScore(auditResults[idx].auditResult, mode) > 70 ? 'excellent' : calculateScore(auditResults[idx].auditResult, mode) >= 50 ? 'acceptable' : 'Needs improvement'}
+                                        </div>
+                                      </div>
                                     </div>
 
                                     <div className="space-y-4">
