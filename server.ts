@@ -675,17 +675,29 @@ async function goToProduct(page: any, searchTerm: string) {
   }
 
   if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
-    console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
-    await page.waitForTimeout(10_000);
-    const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
-    await page.setViewportSize({ width: newWidth, height: 844 });
-    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
-    await page.waitForTimeout(2_500);
+    console.warn('🚫 IP blocked or Akamai challenge detected. Attempting deep retry with randomized profile...');
+    await page.waitForTimeout(Math.floor(Math.random() * 5000) + 5000);
     
-    // Test again
+    // Switch to a new random UA string and viewport
+    const agents = [
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1',
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+    ];
+    await page.setUserAgent(agents[Math.floor(Math.random() * agents.length)]).catch(() => null);
+    
+    const newWidth = Math.floor(Math.random() * (430 - 360 + 1)) + 360;
+    await page.setViewportSize({ width: newWidth, height: 844 }).catch(() => null);
+
+    await page.goto(searchUrl, { waitUntil: 'load', timeout: 60_000 }).catch(() => null);
+    await page.waitForTimeout(3500);
+    await handleConsent();
+    
     content = await page.content().catch(() => '');
+    title = await page.title().catch(() => '');
+
     if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
-      throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
+      throw new Error(`WAF_BLOCKED: Bol.com is currently blocking this IP address. Details: ${title}`);
     }
   }
 
