@@ -628,34 +628,45 @@ async function goToProduct(page: any, searchTerm: string) {
   console.log(`🔎 Searching Bol.com → ${searchUrl}`);
 
   try {
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    await page.waitForTimeout(1_500);
+    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 });
+    await page.waitForTimeout(2_500);
   } catch (e) {
     console.log(`⚠️ Navigation warning: ${(e as Error).message}`);
   }
 
-  const title = await page.title().catch(() => '');
-  if (title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent')) {
-    console.log('🪪 Cookie banner detected – clicking “Akkoord”.');
+  let title = await page.title().catch(() => '');
+  let content = await page.content().catch(() => '');
+
+  // Handle cookie banner or interstitial
+  if (title.toLowerCase() === 'bol' || title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent') || content.includes('data-test="consent-modal"')) {
+    console.log('🪪 Cookie banner or interstitial detected – clicking “Akkoord”.');
     await page
       .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
       .catch(() => null);
-    await page.waitForTimeout(1_200);
+    await page.waitForTimeout(2_000);
+    // Refresh title/content
+    title = await page.title().catch(() => '');
+    content = await page.content().catch(() => '');
   }
 
-  let content = await page.content().catch(() => '');
-  if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
+  if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
     console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
     await page.waitForTimeout(10_000);
     const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
     await page.setViewportSize({ width: newWidth, height: 844 });
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
+    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
+    await page.waitForTimeout(2_500);
     
     // Test again
     content = await page.content().catch(() => '');
-    if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai')) {
+    if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
       throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
     }
+  }
+
+  // Check for zero results
+  if (content.includes('geen resultaten gevonden') || content.includes('0 resultaten')) {
+     throw new Error(`NO_RESULTS: Bol.com found no results for "${searchTerm}". Please verify the EAN/Search term.`);
   }
 
   if (!page.url().includes('/p/')) {
@@ -668,7 +679,10 @@ async function goToProduct(page: any, searchTerm: string) {
       if (!target) {
         // Fallback to any link containing '/p/' inside main or body
         const allLinks = Array.from(document.querySelectorAll('a'));
-        target = allLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
+        target = allLinks.find(a => {
+          const href = (a as HTMLAnchorElement).href;
+          return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/');
+        });
       }
       return target ? (target as HTMLAnchorElement).href : null;
     }).catch(() => null);
@@ -676,8 +690,8 @@ async function goToProduct(page: any, searchTerm: string) {
     if (productHref) {
       console.log(`🖱️ Navigating to product URL directly: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
-      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
-    await page.waitForTimeout(1_500);
+      await page.goto(fullUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
+      await page.waitForTimeout(2_500);
     } else {
       const dbgTitle = await page.title().catch(() => '');
       const dbgUrl = page.url();
