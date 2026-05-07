@@ -638,14 +638,39 @@ async function goToProduct(page: any, searchTerm: string) {
   let content = await page.content().catch(() => '');
 
   // Handle cookie banner or interstitial
-  if (title.toLowerCase() === 'bol' || title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent') || content.includes('data-test="consent-modal"')) {
-    console.log('🪪 Cookie banner or interstitial detected – clicking “Akkoord”.');
-    await page
-      .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
-      .catch(() => null);
-    await page.waitForTimeout(2_000);
-    // Refresh title/content
-    title = await page.title().catch(() => '');
+  const handleConsent = async () => {
+    const currentTitle = await page.title().catch(() => '');
+    const currentContent = await page.content().catch(() => '');
+    if (currentTitle.toLowerCase() === 'bol' || currentTitle.toLowerCase().includes('privacy') || currentTitle.toLowerCase().includes('cookies') || currentTitle.toLowerCase().includes('consent') || currentContent.includes('data-test="consent-modal"')) {
+      console.log('🪪 Cookie banner or interstitial detected – attempting to clear.');
+      await page
+        .click('button#js-accept-all-cookies, [data-test="consent-assign-all"], #js-cookie-consent-accept, button.ui-btn--primary')
+        .catch(() => null);
+      await page.waitForTimeout(2000);
+      
+      // If still stuck on "bol" title, try clicking anything that looks like an "Accept" button
+      const stillStuck = await page.title().catch(() => '') === 'bol';
+      if (stillStuck) {
+        await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const acceptBtn = buttons.find(b => b.textContent?.includes('Akkoord') || b.textContent?.includes('accepteren'));
+          if (acceptBtn) (acceptBtn as HTMLButtonElement).click();
+        }).catch(() => null);
+        await page.waitForTimeout(2000);
+      }
+    }
+  };
+
+  await handleConsent();
+  content = await page.content().catch(() => '');
+  title = await page.title().catch(() => '');
+
+  // If we are still seemingly on an empty/bol page, retry navigation once
+  if (title.toLowerCase() === 'bol' || content.length < 5000) {
+    console.log('🔄 Still on minimal page, retrying navigation...');
+    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
+    await page.waitForTimeout(2500);
+    await handleConsent();
     content = await page.content().catch(() => '');
   }
 
@@ -670,18 +695,25 @@ async function goToProduct(page: any, searchTerm: string) {
   }
 
   if (!page.url().includes('/p/')) {
+    // Scroll down a bit to trigger lazy-load if needed
+    await page.evaluate(() => window.scrollBy(0, 500)).catch(() => null);
+    await page.waitForTimeout(1000);
+
     // Collect specific hrefs that match a product url format
     const productHref = await page.evaluate(() => {
       // Find elements acting as product links
-      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a[data-test="product-title"]'));
-      let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
+      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a.product-item--link, a[data-test="product-title"], .product-item a'));
+      let target = titleLinks.find(a => {
+        const href = (a as HTMLAnchorElement).href;
+        return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/');
+      });
       
       if (!target) {
         // Fallback to any link containing '/p/' inside main or body
         const allLinks = Array.from(document.querySelectorAll('a'));
         target = allLinks.find(a => {
           const href = (a as HTMLAnchorElement).href;
-          return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/');
+          return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/') && !href.includes('account');
         });
       }
       return target ? (target as HTMLAnchorElement).href : null;
