@@ -625,28 +625,114 @@ function getScoreGrade(score: number): string {
 // --- Bol.com Helpers ---
 async function goToProduct(page: any, searchTerm: string) {
   const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(searchTerm)}`;
-  console.log(`🔎 Searching Bol.com → ${searchUrl}`);
+  console.log(`Searching Bol.com: ${searchUrl}`);
 
+  // Step 1: Go to Bol.com homepage first to handle cookie consent in a clean context
   try {
-    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 });
-    await page.waitForTimeout(2_500);
+    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'load', timeout: 45_000 });
+    await page.waitForTimeout(2_000);
   } catch (e) {
-    console.log(`⚠️ Navigation warning: ${(e as Error).message}`);
+    console.log(`Homepage navigation warning: ${(e as Error).message}`);
   }
 
+  // Step 2: Handle cookie consent with comprehensive selectors and JS fallback
+  let consentHandled = false;
+  for (let attempt = 0; attempt < 3 && !consentHandled; attempt++) {
+    const content = await page.content().catch(() => '');
+    const title = await page.title().catch(() => '');
+
+    const needsConsent = title.toLowerCase() === 'bol' ||
+      title.toLowerCase().includes('privacy') ||
+      title.toLowerCase().includes('cookies') ||
+      title.toLowerCase().includes('consent') ||
+      content.includes('consent-modal') ||
+      content.includes('cookie-consent') ||
+      content.includes('js-accept-all-cookies') ||
+      content.includes('consent-assign-all') ||
+      content.includes('Akkoord');
+
+    if (!needsConsent) {
+      consentHandled = true;
+      break;
+    }
+
+    console.log(`Cookie consent detected (attempt ${attempt + 1}/3) - trying to accept...`);
+
+    // Try clicking with Playwright first (multiple selectors)
+    const consentSelectors = [
+      'button#js-accept-all-cookies',
+      '[data-test="consent-assign-all"]',
+      'button[class*="consent"]',
+      'button[class*="cookie"]',
+      'button[class*="accept"]',
+      '#onetrust-accept-btn-handler',
+      '.ot-sdk-btn',
+    ];
+
+    let clicked = false;
+    for (const sel of consentSelectors) {
+      try {
+        const isVis = await page.isVisible(sel);
+        if (isVis) {
+          await page.click(sel);
+          clicked = true;
+          console.log(`Clicked consent button: ${sel}`);
+          break;
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    // JS fallback: find any button with consent-related text and click it
+    if (!clicked) {
+      console.log('Trying JS fallback for consent button...');
+      await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
+        const target = buttons.find(btn => {
+          const text = (btn.textContent || '').toLowerCase().trim();
+          return text.includes('akkoord') ||
+            text.includes('accepteer') ||
+            text.includes('accept') ||
+            text === 'ok' ||
+            text.includes('alle cookies') ||
+            text.includes('toestaan');
+        });
+        if (target) {
+          (target as HTMLElement).click();
+          return true;
+        }
+        return false;
+      }).catch(() => false);
+    }
+
+    await page.waitForTimeout(3_000);
+  }
+
+  // Step 3: Navigate to the actual search URL
+  console.log(`Navigating to search URL: ${searchUrl}`);
+  try {
+    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 });
+    await page.waitForTimeout(3_000);
+  } catch (e) {
+    console.log(`Search navigation warning: ${(e as Error).message}`);
+  }
+
+  // Step 4: Handle consent AGAIN if it reappears on search page
   let title = await page.title().catch(() => '');
   let content = await page.content().catch(() => '');
 
-  // Handle cookie banner or interstitial
-  if (title.toLowerCase() === 'bol' || title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent') || content.includes('data-test="consent-modal"')) {
-    console.log('🪪 Cookie banner or interstitial detected – clicking “Akkoord”.');
-    await page
-      .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
-      .catch(() => null);
+  if (title.toLowerCase() === 'bol' || content.includes('consent-modal') || content.includes('js-accept-all-cookies')) {
+    console.log('Consent appeared again on search page - handling...');
+    await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
+      const target = buttons.find(btn => {
+        const text = (btn.textContent || '').toLowerCase().trim();
+        return text.includes('akkoord') || text.includes('accepteer') || text.includes('accept') || text === 'ok' || text.includes('alle cookies') || text.includes('toestaan');
+      });
+      if (target) (target as HTMLElement).click();
+    }).catch(() => null);
     await page.waitForTimeout(2_000);
 
-    // Re-navigate to the search URL after accepting cookies so results load properly
-    console.log('Re-navigating to search URL after cookie acceptance...');
+    // Re-navigate
     try {
       await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 });
       await page.waitForTimeout(3_000);
@@ -654,48 +740,47 @@ async function goToProduct(page: any, searchTerm: string) {
       console.log(`Re-navigation warning: ${(e as Error).message}`);
     }
 
-    // Refresh title/content
     title = await page.title().catch(() => '');
     content = await page.content().catch(() => '');
   }
 
+  // Step 5: Check for IP block
   if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
-    console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
+    console.warn('IP blocked or Akamai challenge - pausing then retrying with a new viewport.');
     await page.waitForTimeout(10_000);
     const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
     await page.setViewportSize({ width: newWidth, height: 844 });
     await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
     await page.waitForTimeout(2_500);
     
-    // Test again
     content = await page.content().catch(() => '');
     if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
       throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
     }
   }
 
-  // Check for zero results
+  // Step 6: Check for zero results
   if (content.includes('geen resultaten gevonden') || content.includes('0 resultaten')) {
      throw new Error(`NO_RESULTS: Bol.com found no results for "${searchTerm}". Please verify the EAN/Search term.`);
   }
 
+  // Step 7: Find and navigate to product page
   if (!page.url().includes('/p/')) {
     // Wait for search result items to appear in the DOM
     await page.waitForSelector(
-      'a[data-test="product-title"], a.product-title, a.product-item__title, [data-test="product-item"] a, li[data-test="product-item"] a, .product-item a[href*="/p/"], ul.product-list a[href*="/p/"]',
+      'a[data-test="product-title"], a.product-title, a.product-item__title, [data-test="product-item"] a, li[data-test="product-item"] a, .product-item a[href*="/p/"], ul.product-list a[href*="/p/"], a[href*="/p/"]',
       { timeout: 15_000 }
     ).catch(() => null);
 
-    // Collect specific hrefs that match a product url format
     const productHref = await page.evaluate(() => {
-      // Find elements acting as product links
+      // 1. Try specific product title link selectors
       const titleLinks = Array.from(document.querySelectorAll(
         'a[data-test="product-title"], a.product-title, a.product-item__title, a.ui-link[href*="/p/"], [data-test="product-item"] a[href*="/p/"], li[data-test="product-item"] a[href*="/p/"]'
       ));
       let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
-      
+
       if (!target) {
-        // Fallback to any link containing '/p/' inside main or body
+        // 2. Fallback: any <a> whose href contains /p/ but not /m/ or /s/
         const allLinks = Array.from(document.querySelectorAll('a'));
         target = allLinks.find(a => {
           const href = (a as HTMLAnchorElement).href;
@@ -706,7 +791,7 @@ async function goToProduct(page: any, searchTerm: string) {
     }).catch(() => null);
 
     if (productHref) {
-      console.log(`🖱️ Navigating to product URL directly: ${productHref}`);
+      console.log(`Navigating to product URL: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
       await page.goto(fullUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
       await page.waitForTimeout(2_500);
