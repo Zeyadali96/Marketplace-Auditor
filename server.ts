@@ -1079,7 +1079,7 @@ app.post("/api/audit/bol", async (req, res) => {
 // 4. Sheets APIs
 app.post("/api/sheets/fetch", async (req, res) => {
   try {
-    const { sheetId, sheetName } = req.body;
+    const { sheetId, mode, marketplace, sheetName: requestedSheetName } = req.body;
     const auth = new JWT({
       email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
       key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
@@ -1087,30 +1087,46 @@ app.post("/api/sheets/fetch", async (req, res) => {
     });
     const doc = new GoogleSpreadsheet(sheetId, auth);
     await doc.loadInfo();
-    const sheet = doc.sheetsByTitle[sheetName] || doc.sheetsByIndex[0];
+
+    const targetTabName = requestedSheetName || (mode === "bol" ? "Product data" : "Amazon Data");
+    const sheet = doc.sheetsByTitle[targetTabName];
+    if (!sheet) {
+      throw new Error(`Sheet tab "${targetTabName}" not found in the spreadsheet.`);
+    }
+
+    // Amazon Data tab has a category group row in row 1;
+    // the real column headers (ASIN, AMZ title DE, …) are in row 2.
+    // Product data tab has normal headers in row 1.
+    if (targetTabName === 'Amazon Data') {
+      await sheet.loadHeaderRow(2);
+    }
+
     const rows = await sheet.getRows();
     const data = rows.map(row => row.toObject());
+    
     res.json({ data });
   } catch (error: any) {
+    console.error("Fetch Sheet Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.post("/api/sheets/save-audit", async (req, res) => {
   try {
-    const { mode, identifier, auditResult, liveData, masterData } = req.body;
+    const { sheetId, mode, identifier, auditResult, liveData, masterData } = req.body;
     
+    if (!sheetId) throw new Error("Missing sheetId in request body");
+
     const auth = new JWT({
       email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
       key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 
-    const spreadsheetId = '1V4lNf30SlBwczSvGX9rfn5eWFH2AvMO4TqMHAHalS7s';
-    const doc = new GoogleSpreadsheet(spreadsheetId, auth);
+    const doc = new GoogleSpreadsheet(sheetId, auth);
     await doc.loadInfo();
     
-    const targetSheetName = mode === "bol" ? "Bol QC results" : "Amazon QC results";
+    const targetSheetName = mode === "bol" ? "Bol QC Results" : "Amazon QC Results";
     // Case-insensitive search for the sheet
     const sheet = doc.sheetsByTitle[targetSheetName] || 
                   doc.sheetsByIndex.find(s => s.title.toLowerCase().trim() === targetSheetName.toLowerCase());
@@ -1228,10 +1244,12 @@ app.post("/api/sheets/save-audit", async (req, res) => {
 
 app.post("/api/sheets/batch-save-audit", async (req, res) => {
   try {
-    const { mode, audits } = req.body;
+    const { sheetId, mode, audits } = req.body;
     if (!audits || !Array.isArray(audits) || audits.length === 0) {
       return res.json({ success: true, message: "No audits to save." });
     }
+    
+    if (!sheetId) throw new Error("Missing sheetId in request body");
 
     const auth = new JWT({
       email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -1239,11 +1257,10 @@ app.post("/api/sheets/batch-save-audit", async (req, res) => {
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 
-    const spreadsheetId = '1V4lNf30SlBwczSvGX9rfn5eWFH2AvMO4TqMHAHalS7s';
-    const doc = new GoogleSpreadsheet(spreadsheetId, auth);
+    const doc = new GoogleSpreadsheet(sheetId, auth);
     await doc.loadInfo();
 
-    const targetSheetName = mode === "bol" ? "Bol QC results" : "Amazon QC results";
+    const targetSheetName = mode === "bol" ? "Bol QC Results" : "Amazon QC Results";
     const sheet = doc.sheetsByTitle[targetSheetName] || 
                   doc.sheetsByIndex.find(s => s.title.toLowerCase().trim() === targetSheetName.toLowerCase());
 

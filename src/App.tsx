@@ -67,7 +67,7 @@ export default function App() {
   const [galleryModal, setGalleryModal] = useState<{ images: string[], title: string } | null>(null);
 
   const marketplaces = [
-    { label: 'United Kingdom', value: 'amazon.co.uk', code: 'UK' },
+    { label: 'United Kingdom', value: 'amazon.co.uk', code: 'EN' },
     { label: 'Germany', value: 'amazon.de', code: 'DE' },
     { label: 'France', value: 'amazon.fr', code: 'FR' },
     { label: 'Italy', value: 'amazon.it', code: 'IT' },
@@ -76,7 +76,7 @@ export default function App() {
     { label: 'Belgium', value: 'amazon.com.be', code: 'BE' },
     { label: 'Sweden', value: 'amazon.se', code: 'SE' },
     { label: 'Poland', value: 'amazon.pl', code: 'PL' },
-    { label: 'United States', value: 'amazon.com', code: 'US' },
+    { label: 'United States', value: 'amazon.com', code: 'EN' },
   ];
 
   const getVal = (row: any, ...keys: string[]) => {
@@ -110,7 +110,7 @@ export default function App() {
       const response = await fetch('/api/sheets/fetch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sheetId, sheetName })
+        body: JSON.stringify({ sheetId, mode, marketplace })
       });
       const result = await response.json();
       if (result.error) {
@@ -118,21 +118,7 @@ export default function App() {
         throw new Error(errorMsg);
       }
       setData(result.data);
-
-      // Additionally fetch Amazon Data for master image lookup if it's not the current sheet
-      if (mode === 'amazon' && sheetName !== 'Amazon Data') {
-        const masterResp = await fetch('/api/sheets/fetch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sheetId, sheetName: 'Amazon Data' })
-        });
-        const masterResult = await masterResp.json();
-        if (!masterResult.error) {
-          setMasterSheetData(masterResult.data);
-        }
-      } else if (sheetName === 'Amazon Data') {
-        setMasterSheetData(result.data);
-      }
+      setMasterSheetData(result.data);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -162,6 +148,7 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            sheetId,
             mode,
             audits: resultsToBatch
           })
@@ -183,7 +170,7 @@ export default function App() {
 
     Object.entries(auditResults).forEach(([idx, res]: any) => {
       const row = data[parseInt(idx)];
-      const id = mode === 'amazon' ? row.ASIN : row.EAN;
+      const id = mode === 'amazon' ? getVal(row, 'ASIN', 'asin') : getVal(row, 'EAN', 'ean');
       const bulletMatch = res.auditResult.bullets ? (res.auditResult.bullets.filter((b: any) => b.match).length / (res.auditResult.bullets.length || 1)) : 0;
       const score = calculateScore(res.auditResult, mode);
       
@@ -212,64 +199,66 @@ export default function App() {
   };
   const runAudit = async (rowIndex: number, skipSave = false) => {
     const row = data[rowIndex];
-    const asin = getVal(row, 'ASIN', 'asin');
-    const ean = getVal(row, 'EAN', 'ean');
-    const identifier = mode === 'amazon' ? asin : ean;
-    
-    if (!identifier) {
-      setError(`Missing ${mode === 'amazon' ? 'ASIN' : 'EAN'} for row ${rowIndex + 1}`);
-      return null;
+    let identifier = '';
+    if (mode === 'amazon') {
+      identifier = getVal(row, 'ASIN', 'asin');
+      if (!identifier) {
+        setError(`Missing ASIN for row ${rowIndex + 1}`);
+        return null;
+      }
+    } else {
+      identifier = getVal(row, 'EAN', 'ean');
+      if (!identifier) {
+        setError(`Missing EAN for row ${rowIndex + 1}`);
+        return null;
+      }
     }
 
     // Extract language code from marketplace (e.g., amazon.de -> DE)
     const langCode = mode === 'amazon' ? countryCode : 'NL';
-    const suffix = langCode ? ` ${langCode}` : '';
-
-    // Find master reference row from Amazon Data sheet if available
-    const asinFromRow = getVal(row, 'ASIN', 'asin');
-    const masterReferenceRow = mode === 'amazon' && masterSheetData.length > 0 
-      ? (masterSheetData.find(r => getVal(r, 'ASIN', 'asin') === asinFromRow) || row)
-      : row;
+    const suffix = mode === 'amazon' ? ` ${countryCode}` : '';
 
     const masterData = {
-      title: mode === 'bol' 
-        ? getVal(row, 'Bol Title', 'Bol Product Name', 'Product Name NL', 'Product Name', 'Title NL', 'title nl', 'Title', 'Master Title')
-        : getVal(row, 'Amazon Title', `AMZ title${suffix}`, `Title${suffix}`, `Amazon Title ${langCode}`),
+      // --- Title ---
+      title: mode === 'bol'
+        ? getVal(row, 'Title NL: Bol', 'Title NL', 'Bol Title', 'Title')
+        : getVal(row, `AMZ title${suffix}`, `AMZ Title${suffix}`, `Amazon Title ${langCode}`, 'Title'),
+      // --- Description ---
       description: mode === 'bol'
-        ? getVal(row, 'Bol Description', 'Bol Body', 'Bol Content', 'Product Description NL', 'Body NL', 'body nl', 'Description', 'Product Description', 'Master Description', 'Description NL')
-        : getVal(row, 'Amazon Description', `AMZ body${suffix}`, `Description${suffix}`, `Amazon Description ${langCode}`),
-      bullets: [
-        getVal(row, 'Bullet point 1', `Bullet point 1${suffix}`),
-        getVal(row, 'Bullet point 2', `Bullet point 2${suffix}`),
-        getVal(row, 'Bullet point 3', `Bullet point 3${suffix}`),
-        getVal(row, 'Bullet point 4', `Bullet point 4${suffix}`),
-        getVal(row, 'Bullet point 5', `Bullet point 5${suffix}`)
-      ].filter(Boolean),
+        ? getVal(row, 'Body NL: Bol Decoded', 'Body NL', 'Bol Description', 'Description')
+        : getVal(row, `AMZ body${suffix}`, `AMZ Body${suffix}`, `Amazon Description ${langCode}`, 'Description'),
+      // --- Bullet Points (Amazon only — Bol has no bullets) ---
+      bullets: mode === 'amazon'
+        ? [
+            getVal(row, `Bullet point 1${suffix}`),
+            getVal(row, `Bullet point 2${suffix}`),
+            getVal(row, `Bullet point 3${suffix}`),
+            getVal(row, `Bullet point 4${suffix}`),
+            getVal(row, `Bullet point 5${suffix}`)
+          ].filter(Boolean)
+        : [],
+      // --- Images ---
       images: mode === 'bol'
         ? [
-            getVal(row, 'Bol IMG 1', 'Image NL'), getVal(row, 'Bol IMG 2'), getVal(row, 'Bol IMG 3'),
+            getVal(row, 'Bol IMG 1'), getVal(row, 'Bol IMG 2'), getVal(row, 'Bol IMG 3'),
             getVal(row, 'Bol IMG 4'), getVal(row, 'Bol IMG 5'), getVal(row, 'Bol IMG 6'),
             getVal(row, 'Bol IMG 7'), getVal(row, 'Bol IMG 8'), getVal(row, 'Bol IMG 9'),
             getVal(row, 'Bol IMG 10')
           ].filter(Boolean)
         : [
-            getVal(masterReferenceRow, 'AMZ IMG 1', 'Image 1', 'image 1', 'AMZ Image 1', 'AMZ Master Image 1', 'Amazon Master Image 1'), 
-            getVal(masterReferenceRow, 'AMZ IMG 2', 'Image 2', 'image 2', 'AMZ Image 2', 'AMZ Master Image 2', 'Amazon Master Image 2'), 
-            getVal(masterReferenceRow, 'AMZ IMG 3', 'Image 3', 'image 3', 'AMZ Image 3', 'AMZ Master Image 3', 'Amazon Master Image 3'),
-            getVal(masterReferenceRow, 'AMZ IMG 4', 'Image 4', 'image 4', 'AMZ Master Image 4', 'Amazon Master Image 4'), 
-            getVal(masterReferenceRow, 'AMZ IMG 5', 'Image 5', 'image 5', 'AMZ Master Image 5', 'Amazon Master Image 5'), 
-            getVal(masterReferenceRow, 'AMZ IMG 6', 'Image 6', 'image 6', 'AMZ Master Image 6', 'Amazon Master Image 6'),
-            getVal(masterReferenceRow, 'AMZ IMG 7', 'Image 7', 'image 7', 'AMZ Master Image 7', 'Amazon Master Image 7'),
-            getVal(masterReferenceRow, 'AMZ IMG 8', 'Image 8', 'image 8', 'AMZ Master Image 8', 'Amazon Master Image 8'),
-            getVal(masterReferenceRow, 'AMZ IMG 9', 'Image 9', 'image 9', 'AMZ Master Image 9', 'Amazon Master Image 9'),
-            getVal(masterReferenceRow, 'AMZ IMG 10', 'Image 10', 'image 10', 'AMZ Master Image 10', 'Amazon Master Image 10'),
-            getVal(row, `AMZ IMG 1${suffix}`, `Image 1${suffix}`), 
-            getVal(row, `AMZ IMG 2${suffix}`, `Image 2${suffix}`)
+            getVal(row, `IMG 1${suffix}`),
+            getVal(row, `IMG 2${suffix}`),
+            getVal(row, `IMG 3${suffix}`),
+            getVal(row, `IMG 4${suffix}`),
+            getVal(row, `IMG 5${suffix}`)
           ].filter(Boolean),
       price: getVal(row, 'Price', 'price'),
       shipping: getVal(row, 'Shipping', 'shipping', 'Shipping Time', `Shipping ${langCode}`, `Shipping Time ${langCode}`),
-      variations: getVal(row, 'Variations', 'variations') === 'Yes' || getVal(row, 'Variations', 'variations') === true || getVal(row, 'Variations', 'variations') === 'TRUE',
-      hasAPlus: mode === 'amazon' && (getVal(row, 'APlus', 'aplus', 'A+ Content') === 'Yes' || getVal(row, 'APlus', 'aplus', 'A+ Content') === true || getVal(row, 'APlus', 'aplus', 'A+ Content') === 'TRUE')
+      variations: getVal(row, 'Variations', 'variations') === 'Yes' || getVal(row, 'Variations', 'variations') === 'TRUE',
+      hasAPlus: mode === 'amazon' && (
+        getVal(row, 'APlus', 'aplus', 'A+ Content') === 'Yes' ||
+        getVal(row, 'APlus', 'aplus', 'A+ Content') === 'TRUE'
+      )
     };
 
     setAuditing(rowIndex.toString());
@@ -295,6 +284,7 @@ export default function App() {
       }));
 
       const auditPayload = {
+        sheetId,
         mode,
         identifier,
         marketplace,
@@ -364,7 +354,7 @@ export default function App() {
                 Amazon
               </button>
               <button 
-                onClick={() => { setMode('bol'); setSheetName('Bol Data'); }}
+                onClick={() => { setMode('bol'); setSheetName('Product data'); }}
                 className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${mode === 'bol' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 Bol.com
@@ -404,8 +394,7 @@ export default function App() {
                   value={sheetId}
                   onChange={(e) => setSheetId(e.target.value)}
                   placeholder="Enter Spreadsheet ID..."
-                  className="w-full pl-10 pr-4 py-2 bg-slate-100 border border-slate-200 rounded-xl text-slate-500 cursor-not-allowed outline-none transition-all"
-                  readOnly
+                className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all"
                 />
               </div>
             </div>
@@ -484,9 +473,9 @@ export default function App() {
                     <React.Fragment key={idx}>
                       <tr className={`hover:bg-slate-50 transition-colors ${selectedRow === idx ? 'bg-indigo-50/30' : ''}`}>
                         <td className="px-6 py-4">
-                          <div className="font-medium text-slate-900 truncate max-w-xs">{row.Title}</div>
+                          <div className="font-medium text-slate-900 truncate max-w-xs">{getVal(row, 'Title', 'title', 'Product Title', 'ASIN') || 'Untitled'}</div>
                           <div className="flex items-center gap-2 mt-0.5">
-                            <span className="text-xs text-slate-500">Master: {row.Price}</span>
+                            <span className="text-xs text-slate-500">Master: {getVal(row, 'Price', 'price') || 'N/A'}</span>
                             {auditResults[idx] && (
                               <span className={`text-xs font-bold ${auditResults[idx].auditResult.price.match ? 'text-green-600' : 'text-red-600'}`}>
                                 Live: {auditResults[idx].liveData.price || 'N/A'}
@@ -495,7 +484,7 @@ export default function App() {
                           </div>
                         </td>
                         <td className="px-6 py-4 font-mono text-sm text-slate-600">
-                          {mode === 'amazon' ? row.ASIN : row.EAN}
+                          {mode === 'amazon' ? getVal(row, 'ASIN', 'asin') : getVal(row, 'EAN', 'ean')}
                         </td>
                         <td className="px-6 py-4 text-center">
                           {savingRow === idx ? (
@@ -796,7 +785,7 @@ export default function App() {
 
                                     <div className="pt-4">
                                       <a 
-                                        href={mode === 'amazon' ? `https://www.${marketplace}/dp/${row.ASIN}` : (auditResults[idx]?.liveData?.url || `https://www.bol.com/nl/nl/s/?searchtext=${row.EAN}`)}
+                                        href={mode === 'amazon' ? `https://www.${marketplace}/dp/${getVal(row, 'ASIN', 'asin')}` : (auditResults[idx]?.liveData?.url || `https://www.bol.com/nl/nl/s/?searchtext=${getVal(row, 'EAN', 'ean')}`)}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         className="inline-flex items-center gap-2 text-sm text-indigo-600 font-medium hover:underline"
