@@ -630,82 +630,13 @@ async function goToProduct(page: any, searchTerm: string) {
   // Step 1: Go to Bol.com homepage first to handle cookie consent in a clean context
   try {
     await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'load', timeout: 45_000 });
-    await page.waitForTimeout(2_000);
+    await page.waitForTimeout(3_000);
   } catch (e) {
     console.log(`Homepage navigation warning: ${(e as Error).message}`);
   }
 
-  // Step 2: Handle cookie consent with comprehensive selectors and JS fallback
-  let consentHandled = false;
-  for (let attempt = 0; attempt < 3 && !consentHandled; attempt++) {
-    const content = await page.content().catch(() => '');
-    const title = await page.title().catch(() => '');
-
-    const needsConsent = title.toLowerCase() === 'bol' ||
-      title.toLowerCase().includes('privacy') ||
-      title.toLowerCase().includes('cookies') ||
-      title.toLowerCase().includes('consent') ||
-      content.includes('consent-modal') ||
-      content.includes('cookie-consent') ||
-      content.includes('js-accept-all-cookies') ||
-      content.includes('consent-assign-all') ||
-      content.includes('Akkoord');
-
-    if (!needsConsent) {
-      consentHandled = true;
-      break;
-    }
-
-    console.log(`Cookie consent detected (attempt ${attempt + 1}/3) - trying to accept...`);
-
-    // Try clicking with Playwright first (multiple selectors)
-    const consentSelectors = [
-      'button#js-accept-all-cookies',
-      '[data-test="consent-assign-all"]',
-      'button[class*="consent"]',
-      'button[class*="cookie"]',
-      'button[class*="accept"]',
-      '#onetrust-accept-btn-handler',
-      '.ot-sdk-btn',
-    ];
-
-    let clicked = false;
-    for (const sel of consentSelectors) {
-      try {
-        const isVis = await page.isVisible(sel);
-        if (isVis) {
-          await page.click(sel);
-          clicked = true;
-          console.log(`Clicked consent button: ${sel}`);
-          break;
-        }
-      } catch (_) { /* ignore */ }
-    }
-
-    // JS fallback: find any button with consent-related text and click it
-    if (!clicked) {
-      console.log('Trying JS fallback for consent button...');
-      await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
-        const target = buttons.find(btn => {
-          const text = (btn.textContent || '').toLowerCase().trim();
-          return text.includes('akkoord') ||
-            text.includes('accepteer') ||
-            text.includes('accept') ||
-            text === 'ok' ||
-            text.includes('alle cookies') ||
-            text.includes('toestaan');
-        });
-        if (target) {
-          (target as HTMLElement).click();
-          return true;
-        }
-        return false;
-      }).catch(() => false);
-    }
-
-    await page.waitForTimeout(3_000);
-  }
+  // Step 2: Handle cookie consent — check BOTH main page and all iframes
+  await handleBolConsent(page);
 
   // Step 3: Navigate to the actual search URL
   console.log(`Navigating to search URL: ${searchUrl}`);
@@ -720,39 +651,36 @@ async function goToProduct(page: any, searchTerm: string) {
   let title = await page.title().catch(() => '');
   let content = await page.content().catch(() => '');
 
-  if (title.toLowerCase() === 'bol' || content.includes('consent-modal') || content.includes('js-accept-all-cookies')) {
-    console.log('Consent appeared again on search page - handling...');
-    await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
-      const target = buttons.find(btn => {
-        const text = (btn.textContent || '').toLowerCase().trim();
-        return text.includes('akkoord') || text.includes('accepteer') || text.includes('accept') || text === 'ok' || text.includes('alle cookies') || text.includes('toestaan');
-      });
-      if (target) (target as HTMLElement).click();
-    }).catch(() => null);
+  if (title.toLowerCase() === 'bol' || content.includes('consent') || content.includes('Akkoord') || content.includes('cookie')) {
+    console.log('Consent/interstitial still present on search page — handling again...');
+    await handleBolConsent(page);
     await page.waitForTimeout(2_000);
 
-    // Re-navigate
+    // Re-navigate to search
     try {
       await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 });
       await page.waitForTimeout(3_000);
     } catch (e) {
       console.log(`Re-navigation warning: ${(e as Error).message}`);
     }
-
     title = await page.title().catch(() => '');
     content = await page.content().catch(() => '');
   }
 
+  // DEBUG: Log what we see
+  console.log(`Page state — Title: "${title}", URL: "${page.url()}", Content length: ${content.length}`);
+  const hasProductLinks = content.includes('/p/');
+  console.log(`Contains /p/ links: ${hasProductLinks}`);
+
   // Step 5: Check for IP block
   if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
-    console.warn('IP blocked or Akamai challenge - pausing then retrying with a new viewport.');
+    console.warn('IP blocked or Akamai challenge — pausing then retrying.');
     await page.waitForTimeout(10_000);
     const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
     await page.setViewportSize({ width: newWidth, height: 844 });
     await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
     await page.waitForTimeout(2_500);
-    
+
     content = await page.content().catch(() => '');
     if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
       throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
@@ -761,26 +689,23 @@ async function goToProduct(page: any, searchTerm: string) {
 
   // Step 6: Check for zero results
   if (content.includes('geen resultaten gevonden') || content.includes('0 resultaten')) {
-     throw new Error(`NO_RESULTS: Bol.com found no results for "${searchTerm}". Please verify the EAN/Search term.`);
+    throw new Error(`NO_RESULTS: Bol.com found no results for "${searchTerm}".`);
   }
 
   // Step 7: Find and navigate to product page
   if (!page.url().includes('/p/')) {
-    // Wait for search result items to appear in the DOM
     await page.waitForSelector(
-      'a[data-test="product-title"], a.product-title, a.product-item__title, [data-test="product-item"] a, li[data-test="product-item"] a, .product-item a[href*="/p/"], ul.product-list a[href*="/p/"], a[href*="/p/"]',
+      'a[href*="/p/"]',
       { timeout: 15_000 }
     ).catch(() => null);
 
     const productHref = await page.evaluate(() => {
-      // 1. Try specific product title link selectors
       const titleLinks = Array.from(document.querySelectorAll(
         'a[data-test="product-title"], a.product-title, a.product-item__title, a.ui-link[href*="/p/"], [data-test="product-item"] a[href*="/p/"], li[data-test="product-item"] a[href*="/p/"]'
       ));
       let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
 
       if (!target) {
-        // 2. Fallback: any <a> whose href contains /p/ but not /m/ or /s/
         const allLinks = Array.from(document.querySelectorAll('a'));
         target = allLinks.find(a => {
           const href = (a as HTMLAnchorElement).href;
@@ -791,15 +716,137 @@ async function goToProduct(page: any, searchTerm: string) {
     }).catch(() => null);
 
     if (productHref) {
-      console.log(`Navigating to product URL: ${productHref}`);
+      console.log(`Navigating to product: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
       await page.goto(fullUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
       await page.waitForTimeout(2_500);
     } else {
       const dbgTitle = await page.title().catch(() => '');
       const dbgUrl = page.url();
+      const snippet = content.substring(0, 2000);
+      console.error(`DEBUG — page snippet: ${snippet}`);
       throw new Error(`No product link found on the Bol.com results page. Title: "${dbgTitle}", URL: "${dbgUrl}"`);
     }
+  }
+}
+
+// Handle Bol.com cookie consent — checks main frame AND all iframes
+async function handleBolConsent(page: any) {
+  const maxAttempts = 3;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const title = await page.title().catch(() => '');
+    const content = await page.content().catch(() => '');
+
+    const needsConsent = title.toLowerCase() === 'bol' ||
+      content.includes('consent-modal') ||
+      content.includes('cookie-consent') ||
+      content.includes('js-accept-all-cookies') ||
+      content.includes('consent-assign-all') ||
+      content.includes('Akkoord') ||
+      content.includes('onetrust') ||
+      content.includes('cookieconsent');
+
+    if (!needsConsent) {
+      console.log('No consent needed — proceeding.');
+      return;
+    }
+
+    console.log(`Cookie consent detected (attempt ${attempt + 1}/${maxAttempts})`);
+
+    // --- Approach 1: Try clicking in MAIN frame with multiple selectors ---
+    const consentSelectors = [
+      'button#js-accept-all-cookies',
+      '[data-test="consent-assign-all"]',
+      'button[class*="consent"]',
+      'button[class*="cookie"]',
+      'button[class*="accept"]',
+      '#onetrust-accept-btn-handler',
+      '.ot-sdk-btn',
+      '#accept-all',
+      '[id*="accept"]',
+      'button[data-action="accept"]',
+    ];
+
+    let clicked = false;
+    for (const sel of consentSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          await el.click().catch(() => null);
+          clicked = true;
+          console.log(`Clicked consent in main frame: ${sel}`);
+          break;
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    // --- Approach 2: JS text-based fallback in main frame ---
+    if (!clicked) {
+      clicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"], input[type="submit"]'));
+        const target = buttons.find(btn => {
+          const text = (btn.textContent || '').toLowerCase().trim();
+          return text.includes('akkoord') || text.includes('accepteer') || text.includes('accept all') ||
+            text.includes('accept') || text === 'ok' || text.includes('alle cookies') || text.includes('toestaan');
+        });
+        if (target) { (target as HTMLElement).click(); return true; }
+        return false;
+      }).catch(() => false);
+      if (clicked) console.log('Clicked consent via JS text search in main frame');
+    }
+
+    // --- Approach 3: Search inside ALL iframes ---
+    if (!clicked) {
+      console.log('Checking iframes for consent buttons...');
+      const frames = page.frames();
+      console.log(`Found ${frames.length} frames`);
+      for (const frame of frames) {
+        if (frame === page.mainFrame()) continue;
+        try {
+          const frameUrl = frame.url();
+          console.log(`Checking frame: ${frameUrl}`);
+
+          // Try CSS selectors in iframe
+          for (const sel of consentSelectors) {
+            try {
+              const el = await frame.$(sel);
+              if (el) {
+                await el.click();
+                clicked = true;
+                console.log(`Clicked consent in iframe (${frameUrl}): ${sel}`);
+                break;
+              }
+            } catch (_) { /* ignore */ }
+          }
+          if (clicked) break;
+
+          // Try JS text search in iframe
+          const jsClicked = await frame.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"]'));
+            const target = buttons.find(btn => {
+              const text = (btn.textContent || '').toLowerCase().trim();
+              return text.includes('akkoord') || text.includes('accepteer') || text.includes('accept') ||
+                text === 'ok' || text.includes('alle cookies') || text.includes('toestaan');
+            });
+            if (target) { (target as HTMLElement).click(); return true; }
+            return false;
+          }).catch(() => false);
+          if (jsClicked) {
+            clicked = true;
+            console.log(`Clicked consent via JS in iframe: ${frameUrl}`);
+            break;
+          }
+        } catch (e) {
+          console.log(`Frame error: ${(e as Error).message}`);
+        }
+      }
+    }
+
+    if (!clicked) {
+      console.log('Could not find any consent button — waiting and retrying...');
+    }
+
+    await page.waitForTimeout(3_000);
   }
 }
 
