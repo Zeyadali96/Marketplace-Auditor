@@ -644,6 +644,16 @@ async function goToProduct(page: any, searchTerm: string) {
       .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
       .catch(() => null);
     await page.waitForTimeout(2_000);
+
+    // Re-navigate to the search URL after accepting cookies so results load properly
+    console.log('Re-navigating to search URL after cookie acceptance...');
+    try {
+      await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 });
+      await page.waitForTimeout(3_000);
+    } catch (e) {
+      console.log(`Re-navigation warning: ${(e as Error).message}`);
+    }
+
     // Refresh title/content
     title = await page.title().catch(() => '');
     content = await page.content().catch(() => '');
@@ -670,10 +680,18 @@ async function goToProduct(page: any, searchTerm: string) {
   }
 
   if (!page.url().includes('/p/')) {
+    // Wait for search result items to appear in the DOM
+    await page.waitForSelector(
+      'a[data-test="product-title"], a.product-title, a.product-item__title, [data-test="product-item"] a, li[data-test="product-item"] a, .product-item a[href*="/p/"], ul.product-list a[href*="/p/"]',
+      { timeout: 15_000 }
+    ).catch(() => null);
+
     // Collect specific hrefs that match a product url format
     const productHref = await page.evaluate(() => {
       // Find elements acting as product links
-      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a[data-test="product-title"]'));
+      const titleLinks = Array.from(document.querySelectorAll(
+        'a[data-test="product-title"], a.product-title, a.product-item__title, a.ui-link[href*="/p/"], [data-test="product-item"] a[href*="/p/"], li[data-test="product-item"] a[href*="/p/"]'
+      ));
       let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
       
       if (!target) {
