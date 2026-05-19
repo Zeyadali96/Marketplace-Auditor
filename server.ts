@@ -686,28 +686,9 @@ async function goToProduct(page: any, searchTerm: string) {
   } catch (e) {
     console.log('[BOL] Cookie pre-injection warning:', (e as Error).message);
   }
-  // Helper: detect Akamai WAF challenge page
-  const isAkamaiChallenge = (c: string, t: string) => {
-    const isBolTitle = t.toLowerCase() === 'bol' || t.toLowerCase() === 'bol.com';
-    
-    // Explicitly prevent Cookie Consent or actual storefronts from being flagged as Akamai
-    if (c.includes('js-accept-all-cookies') || c.includes('consent-assign-all') || c.includes('search-input') || c.includes('lang="nl-NL"')) {
-      return false;
-    }
-    // Identify explicit blocks or the generic Pragma no-cache interstitial
-    return c.includes('sec-if-cpt-container') ||
-           c.includes('Toegang tot deze pagina is geweigerd') ||
-           c.includes('Access Denied') ||
-           c.includes('Pardon Our Interruption') ||
-           (isBolTitle && c.includes('<meta name="Pragma" content="no-cache">')) ||
-           (isBolTitle && !c.includes('lang="nl-NL"'));
-  };
-  // Helper: wait for Akamai challenge to auto-resolve (Fail Fast to prevent Railway Timeout)
+  // Helper: wait for Akamai/Consent to resolve and legitimate DOM to appear
   const waitForAkamai = async () => {
-    let content = await page.content().catch(() => '');
-    let title = await page.title().catch(() => '');
-    if (!isAkamaiChallenge(content, title)) return true;
-    console.log('[BOL] Akamai WAF challenge detected — waiting for auto-resolve...');
+    console.log('[BOL] Waiting for legitimate Bol.com storefront or auto-resolve...');
     
     // Jiggle the mouse to trigger Akamai behavioral telemetry
     try {
@@ -721,33 +702,22 @@ async function goToProduct(page: any, searchTerm: string) {
     
     try {
       await page.waitForFunction(() => {
-        const t = document.title.toLowerCase();
-        // If title is no longer generic bol, it might have resolved
-        if (t !== 'bol' && t !== 'bol.com' && t !== '') return true;
-        // Or if it injected the real body (Bol.com storefronts are large and have lang)
-        if (document.documentElement.outerHTML.includes('lang="nl-NL"')) return true;
-        if (document.body && document.body.innerHTML.length > 20000) return true;
-        return false;
-      }, { timeout: 20_000, polling: 500 });
+        // A legitimate Bol.com page has the consent modal, search input, or product elements.
+        // The Akamai Pragma interstitial has none of these.
+        return document.querySelector('input[name="searchtext"]') !== null ||
+               document.querySelector('button#js-accept-all-cookies') !== null ||
+               document.querySelector('[data-test="consent-assign-all"]') !== null ||
+               document.documentElement.outerHTML.includes('lang="nl-NL"');
+      }, { timeout: 25_000, polling: 500 });
     } catch (e) {
-      console.log('[BOL] Akamai auto-resolve wait finished.');
+      console.log('[BOL] Timeout waiting for Akamai auto-resolve. Reloading...');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => null);
+      await page.waitForTimeout(3000);
     }
-    content = await page.content().catch(() => '');
-    title = await page.title().catch(() => '');
-    
-    if (!isAkamaiChallenge(content, title)) return true;
-    // Last resort: reload
-    console.log('[BOL] Trying full reload...');
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null);
-    await page.waitForTimeout(1_000);
-    
-    content = await page.content().catch(() => '');
-    title = await page.title().catch(() => '');
-    
-    if (isAkamaiChallenge(content, title)) {
-      // Throw explicitly so we fail fast and return 500 instead of hanging and hitting Railway's 100s timeout
+    const content = await page.content().catch(() => '');
+    if (content.includes('<meta name="Pragma" content="no-cache">') || content.includes('sec-if-cpt-container')) {
       const snippet = content.replace(/\s+/g, ' ').substring(0, 150);
-      throw new Error(`WAF_BLOCKED: Stuck on Akamai challenge. Snippet: ${snippet}`);
+      throw new Error(`WAF_BLOCKED: Permanently stuck on Akamai JS challenge. IP or Fingerprint rejected. Snippet: ${snippet}`);
     }
     return true;
   };
@@ -1335,13 +1305,19 @@ app.post("/api/audit/bol", async (req, res) => {
       };
     }
     
-    // Launch stealth-enabled browser
-    browser = await chromiumExtra.launch(launchOpts);
-    
-    // Create context with explicitly defined modern User-Agent and headers
-    // This is CRITICAL because without it, Playwright sends "HeadlessChrome" in the raw HTTP headers,
-    // which Akamai detects instantly, even if the JS navigator object is spoofed by stealth.
-    const context = await browser.newContext({
+    // SCALABLE ROOT CAUSE FIX:
+    // Playwright-extra stealth plugin fails to apply evasions to browser.newContext() reliably.
+    // By using launchPersistentContext with a temporary directory, we force Playwright to
+    // perfectly mimic a real browser profile, applying all WebGL, Canvas, and WebDriver evasions.
+    // This allows the Akamai JS challenge to successfully compute and pass automatically.
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'playwright-bol-'));
+    browser = await chromiumExtra.launchPersistentContext(tmpDir, {
+      headless: true,
+      args: launchOpts.args,
+      proxy: launchOpts.proxy,
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       viewport: { width: Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366, height: Math.floor(Math.random() * (1080 - 768 + 1)) + 768 },
       locale: 'nl-NL',
@@ -1353,9 +1329,7 @@ app.post("/api/audit/bol", async (req, res) => {
         'upgrade-insecure-requests': '1'
       }
     });
-    // NOTE: Removed the manual context.addInitScript navigator.webdriver hack here. 
-    // It conflicts with puppeteer-extra-plugin-stealth and actually triggers Akamai's anti-bot system.
-    const page = await context.newPage();
+    const page = browser.pages()[0] || await browser.newPage();
     
     await goToProduct(page, ean);
     const data = await extractCatalogue(page);
