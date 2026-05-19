@@ -683,77 +683,313 @@ function getScoreGrade(score: number): string {
 // --- Bol.com Helpers ---
 async function goToProduct(page: any, searchTerm: string) {
   const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(searchTerm)}`;
-  console.log(`🔎 Searching Bol.com → ${searchUrl}`);
-
+  console.log(`[BOL] Searching for: ${searchTerm}`);
+  // Step 1: Pre-inject consent cookies to bypass cookie banners entirely
   try {
-    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 });
-    await page.waitForTimeout(2_500);
+    await page.context().addCookies([
+      { name: 'consent-platform-cookie-grp-1', value: '1', domain: '.bol.com', path: '/' },
+      { name: 'consent-platform-cookie-grp-2', value: '1', domain: '.bol.com', path: '/' },
+      { name: 'consent-platform-cookie-grp-3', value: '1', domain: '.bol.com', path: '/' },
+      { name: 'consent-platform-cookie-grp-4', value: '1', domain: '.bol.com', path: '/' },
+      { name: 'consent-platform-cookie-grp-gdpr', value: '1', domain: '.bol.com', path: '/' },
+      { name: 'CONSENTMGR', value: 'c1:1%7Cc2:1%7Cc3:1%7Cc4:1%7Cts:' + Date.now() + '%7Cconsent:true', domain: '.bol.com', path: '/' },
+    ]);
   } catch (e) {
-    console.log(`⚠️ Navigation warning: ${(e as Error).message}`);
+    console.log('[BOL] Cookie pre-injection warning:', (e as Error).message);
   }
-
-  let title = await page.title().catch(() => '');
-  let content = await page.content().catch(() => '');
-
-  // Handle cookie banner or interstitial
-  if (title.toLowerCase() === 'bol' || title.toLowerCase().includes('privacy') || title.toLowerCase().includes('cookies') || title.toLowerCase().includes('consent') || content.includes('data-test="consent-modal"')) {
-    console.log('🪪 Cookie banner or interstitial detected – clicking “Akkoord”.');
-    await page
-      .click('button#js-accept-all-cookies, [data-test="consent-assign-all"]')
-      .catch(() => null);
-    await page.waitForTimeout(2_000);
-    // Refresh title/content
-    title = await page.title().catch(() => '');
-    content = await page.content().catch(() => '');
-  }
-
-  if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
-    console.warn('🚫 IP blocked or Akamai challenge – pausing then retrying with a new viewport.');
-    await page.waitForTimeout(10_000);
-    const newWidth = Math.floor(Math.random() * (420 - 375 + 1)) + 375;
-    await page.setViewportSize({ width: newWidth, height: 844 });
-    await page.goto(searchUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
-    await page.waitForTimeout(2_500);
+  // Helper: detect Akamai WAF challenge page
+  const isAkamaiChallenge = (c: string, t: string) => {
+    const isBolTitle = t.toLowerCase() === 'bol' || t.toLowerCase() === 'bol.com';
     
-    // Test again
+    // Explicitly prevent Cookie Consent or actual storefronts from being flagged as Akamai
+    if (c.includes('js-accept-all-cookies') || c.includes('consent-assign-all') || c.includes('search-input')) {
+      return false;
+    }
+    // Only flag actual block pages, avoid c.includes('Akamai') because Bol uses Akamai CDN scripts on all pages
+    return c.includes('sec-if-cpt-container') ||
+           c.includes('Toegang tot deze pagina is geweigerd') ||
+           c.includes('Access Denied') ||
+           c.includes('Pardon Our Interruption') ||
+           (isBolTitle && c.length < 5000 && !c.includes('lang="nl-NL"'));
+  };
+  // Helper: wait for Akamai challenge to auto-resolve (Fail Fast to prevent Railway Timeout)
+  const waitForAkamai = async () => {
+    let content = await page.content().catch(() => '');
+    let title = await page.title().catch(() => '');
+    if (!isAkamaiChallenge(content, title)) return true;
+    console.log('[BOL] Akamai WAF challenge detected — waiting for auto-resolve...');
+    
+    // Jiggle the mouse to trigger Akamai behavioral telemetry
+    try {
+      await page.mouse.move(100, 100);
+      await page.waitForTimeout(200);
+      await page.mouse.move(300, 200);
+      await page.waitForTimeout(200);
+      await page.mouse.wheel(0, 150);
+      await page.mouse.move(150, 400);
+    } catch (_) {}
+    
+    try {
+      await page.waitForFunction(() => {
+        const t = document.title.toLowerCase();
+        // If title is no longer generic bol, it might have resolved
+        if (t !== 'bol' && t !== 'bol.com' && t !== '') return true;
+        // Or if it injected the real body
+        if (document.body && document.body.innerHTML.length > 20000) return true;
+        return false;
+      }, { timeout: 15_000, polling: 500 });
+    } catch (e) {
+      console.log('[BOL] Akamai auto-resolve wait finished.');
+    }
     content = await page.content().catch(() => '');
-    if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') || content.includes('sec-if-cpt-container') || content.includes('Akamai') || content.includes('Human verification')) {
-      throw new Error("WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.");
+    title = await page.title().catch(() => '');
+    
+    if (!isAkamaiChallenge(content, title)) return true;
+    // Last resort: reload
+    console.log('[BOL] Trying full reload...');
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null);
+    await page.waitForTimeout(1_000);
+    
+    content = await page.content().catch(() => '');
+    title = await page.title().catch(() => '');
+    
+    if (isAkamaiChallenge(content, title)) {
+      // Throw explicitly so we fail fast and return 500 instead of hanging and hitting Railway's 100s timeout
+      const snippet = content.replace(/\s+/g, ' ').substring(0, 150);
+      throw new Error(`WAF_BLOCKED: Stuck on Akamai challenge. Snippet: ${snippet}`);
+    }
+    return true;
+  };
+  // Helper: robustly handle cookie consent banner
+  const handleCookieConsent = async () => {
+    try {
+      const consentSelectors = [
+        'button#js-accept-all-cookies',
+        '[data-test="consent-assign-all"]',
+        '#onetrust-accept-btn-handler',
+        'button[class*="accept"]',
+        'button[id*="accept"]',
+      ];
+      let clicked = false;
+      for (const sel of consentSelectors) {
+        const btn = await page.$(sel).catch(() => null);
+        if (btn && await btn.isVisible().catch(() => false)) {
+          console.log(`[BOL] Clicking consent button: ${sel}`);
+          // Awaiting navigation because clicking consent often triggers a page reload on Bol.com
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null),
+            btn.click().catch(() => null)
+          ]);
+          clicked = true;
+          break;
+        }
+      }
+      if (!clicked) {
+        // JS fallback
+        const jsClicked = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+          const target = buttons.find(b => {
+            const t = (b.textContent || '').toLowerCase();
+            return t.includes('akkoord') || t.includes('accepteer') || t.includes('accept') || t.includes('alle cookies');
+          });
+          if (target) {
+            (target as HTMLElement).click();
+            return true;
+          }
+          return false;
+        }).catch(() => false);
+        if (jsClicked) {
+          console.log(`[BOL] Clicked consent via JS fallback`);
+          await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null);
+        }
+      }
+      await page.waitForTimeout(1000);
+    } catch (_) {}
+  };
+  // Step 2: Navigate to HOMEPAGE first (not search URL) to establish a legitimate session
+  console.log('[BOL] Step 2: Navigating to homepage first...');
+  try {
+    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
+    await page.waitForTimeout(1_000);
+  } catch (e) {
+    console.log(`[BOL] Homepage navigation warning: ${(e as Error).message}`);
+  }
+  // Step 3: Handle Akamai challenge on homepage
+  await waitForAkamai();
+  // Step 4: Handle cookie consent banner if it still appears
+  await handleCookieConsent();
+  // Step 5: Type search term into search box like a human
+  console.log('[BOL] Step 5: Typing search term into search box...');
+  let searchWorked = false;
+  const searchInputSelectors = [
+    'input[data-test="search-input"]',
+    'input[name="searchtext"]',
+    '#searchfor',
+    'input[type="search"]',
+    'input[placeholder*="zoek"]',
+    'input[placeholder*="Zoek"]',
+    '.search-input',
+  ];
+  for (const sel of searchInputSelectors) {
+    try {
+      const input = await page.$(sel);
+      if (input && await input.isVisible()) {
+        await input.click();
+        await page.waitForTimeout(100);
+        // Clear any existing text
+        await input.fill('');
+        await page.waitForTimeout(100);
+        // Type the search term with human-like delays
+        await page.type(sel, searchTerm, { delay: 20 + Math.floor(Math.random() * 30) });
+        await page.waitForTimeout(200);
+        
+        // Wait for navigation after pressing Enter
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null),
+          page.keyboard.press('Enter')
+        ]);
+        
+        console.log(`[BOL] Typed "${searchTerm}" into ${sel} and pressed Enter`);
+        searchWorked = true;
+        break;
+      }
+    } catch (e) {
+      console.log(`[BOL] Search input ${sel} failed:`, (e as Error).message);
     }
   }
-
-  // Check for zero results
-  if (content.includes('geen resultaten gevonden') || content.includes('0 resultaten')) {
-     throw new Error(`NO_RESULTS: Bol.com found no results for "${searchTerm}". Please verify the EAN/Search term.`);
-  }
-
-  if (!page.url().includes('/p/')) {
-    // Collect specific hrefs that match a product url format
-    const productHref = await page.evaluate(() => {
-      // Find elements acting as product links
-      const titleLinks = Array.from(document.querySelectorAll('a.product-title, a.product-item__title, a.ui-link, a[data-test="product-title"]'));
-      let target = titleLinks.find(a => (a as HTMLAnchorElement).href && (a as HTMLAnchorElement).href.includes('/p/'));
-      
-      if (!target) {
-        // Fallback to any link containing '/p/' inside main or body
-        const allLinks = Array.from(document.querySelectorAll('a'));
-        target = allLinks.find(a => {
-          const href = (a as HTMLAnchorElement).href;
-          return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/');
-        });
+  // Fallback: if no search box found, try clicking the search button after typing
+  if (!searchWorked) {
+    console.log('[BOL] Trying search button approach...');
+    try {
+      for (const sel of searchInputSelectors) {
+        const input = await page.$(sel);
+        if (input && await input.isVisible()) {
+          await input.click();
+          await input.fill('');
+          await page.type(sel, searchTerm, { delay: 50 });
+          
+          const searchTrigger = await page.$('button[data-test="search-button"], .search-toggle, [aria-label="Zoeken"]');
+          if (searchTrigger) {
+            await Promise.all([
+              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null),
+              searchTrigger.click().catch(() => null)
+            ]);
+            console.log(`[BOL] Typed "${searchTerm}" and clicked search button`);
+            searchWorked = true;
+          } else {
+            await Promise.all([
+              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null),
+              page.keyboard.press('Enter')
+            ]);
+            searchWorked = true;
+          }
+          break;
+        }
       }
-      return target ? (target as HTMLAnchorElement).href : null;
+    } catch (_) {}
+  }
+  // Last fallback: direct URL navigation if search box approach failed
+  if (!searchWorked) {
+    console.log('[BOL] Search box not found — falling back to direct URL navigation');
+    try {
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+    } catch (_) {}
+  }
+  // Step 6: Wait for search results page to load
+  await page.waitForTimeout(1_500);
+  await waitForAkamai();
+  
+  // Extra check: if we navigated directly or after search, we might hit a secondary consent banner
+  let currentTitle = await page.title().catch(() => '');
+  if (currentTitle.toLowerCase() === 'bol' || currentTitle.toLowerCase() === 'bol.com') {
+    console.log('[BOL] Title is still generic, handling potential secondary consent banner...');
+    await handleCookieConsent();
+    await waitForAkamai();
+  }
+  let content = await page.content().catch(() => '');
+  let title = await page.title().catch(() => '');
+  // Step 7: Check for IP block (only REAL IP blocks)
+  if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') ||
+      content.includes('Human verification')) {
+    console.warn('[BOL] IP blocked — pausing then retrying...');
+    await page.waitForTimeout(5_000);
+    await page.setViewportSize({ width: Math.floor(Math.random() * (420 - 375 + 1)) + 375, height: 844 });
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
+    await page.waitForTimeout(1_000);
+    content = await page.content().catch(() => '');
+    if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') ||
+        content.includes('Human verification')) {
+      throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
+    }
+  }
+  // Step 8: Check for zero results
+  if (content.includes('geen resultaten gevonden') || content.includes('0 resultaten')) {
+    throw new Error(`NO_RESULTS: Bol.com found no results for "${searchTerm}". Please verify the EAN/Search term.`);
+  }
+  // Step 9: If not already on a product page, find and click the first product
+  if (!page.url().includes('/p/')) {
+    // Wait for search results to appear
+    const resultSelectors = [
+      '[data-test="product-item"]',
+      '.product-item--row',
+      '.product-list',
+      'li[class*="product"]',
+      'div[class*="product-item"]',
+      'a[href*="/p/"]',
+      '.ui-kit-card'
+    ];
+    let foundResults = false;
+    for (const sel of resultSelectors) {
+      try {
+        await page.waitForSelector(sel, { state: 'attached', timeout: 5_000 });
+        foundResults = true;
+        console.log(`[BOL] Search results found: ${sel}`);
+        break;
+      } catch (_) {}
+    }
+    if (!foundResults) {
+      console.log('[BOL] Warning: Search results selectors not found, trying to find links directly...');
+      await page.waitForTimeout(1_000);
+      await page.mouse.wheel(0, 500);
+      await page.waitForTimeout(1_000);
+    }
+    // Find the first product link
+    const productHref = await page.evaluate(() => {
+      const titleLinkSelectors = [
+        'a[data-test="product-title"]',
+        'a.product-title',
+        'a.product-item__title',
+        '[data-test="product-item"] a[href*="/p/"]',
+        '.product-item--row a[href*="/p/"]',
+        'a[href*="/p/"]' // fallback to any product link
+      ];
+      for (const sel of titleLinkSelectors) {
+        const el = document.querySelector(sel) as HTMLAnchorElement;
+        // Ignore generic or non-product links
+        if (el && el.href && el.href.includes('/p/') && !el.href.includes('/m/')) return el.href;
+      }
+      const allLinks = Array.from(document.querySelectorAll('a'));
+      const productLink = allLinks.find(a => {
+        const href = a.href;
+        return href && href.includes('/p/') && !href.includes('/m/') && !href.includes('/s/') &&
+               !href.includes('/c/') && !href.includes('/l/') && !href.includes('#');
+      });
+      return productLink ? productLink.href : null;
     }).catch(() => null);
-
     if (productHref) {
-      console.log(`🖱️ Navigating to product URL directly: ${productHref}`);
+      console.log(`[BOL] Navigating to product: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
-      await page.goto(fullUrl, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
-      await page.waitForTimeout(2_500);
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
+      await page.waitForTimeout(1_000);
     } else {
-      const dbgTitle = await page.title().catch(() => '');
-      const dbgUrl = page.url();
-      throw new Error(`No product link found on the Bol.com results page. Title: "${dbgTitle}", URL: "${dbgUrl}"`);
+      const debugTitle = await page.title().catch(() => '');
+      const debugUrl = page.url();
+      const debugContent = await page.content().catch(() => '');
+      console.error(`[BOL] FAILED to find product link.`);
+      console.error(`[BOL] Title: "${debugTitle}", URL: "${debugUrl}"`);
+      // Truncate to avoid polluting logs
+      console.error(`[BOL] Content preview: ${debugContent.substring(0, 1500)}`);
+      throw new Error(`No product link found on the Bol.com results page. Title: "${debugTitle}", URL: "${debugUrl}"`);
     }
   }
 }
@@ -1065,7 +1301,8 @@ app.post("/api/audit/bol", async (req, res) => {
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled'
+        '--disable-blink-features=AutomationControlled',
+        '--incognito' // Enforce engine-level incognito
       ]
     };
     
@@ -1078,30 +1315,26 @@ app.post("/api/audit/bol", async (req, res) => {
       };
     }
     
+    // Launch stealth-enabled browser
     browser = await chromiumExtra.launch(launchOpts);
+    
+    // Create context with explicitly defined modern User-Agent and headers
+    // This is CRITICAL because without it, Playwright sends "HeadlessChrome" in the raw HTTP headers,
+    // which Akamai detects instantly, even if the JS navigator object is spoofed by stealth.
     const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       viewport: { width: Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366, height: Math.floor(Math.random() * (1080 - 768 + 1)) + 768 },
       locale: 'nl-NL',
       extraHTTPHeaders: {
         'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+        'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'none',
-        'sec-fetch-user': '?1',
         'upgrade-insecure-requests': '1'
       }
     });
-
-    await context.addInitScript(() => {
-      // @ts-ignore
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    });
-
+    // NOTE: Removed the manual context.addInitScript navigator.webdriver hack here. 
+    // It conflicts with puppeteer-extra-plugin-stealth and actually triggers Akamai's anti-bot system.
     const page = await context.newPage();
     
     await goToProduct(page, ean);
