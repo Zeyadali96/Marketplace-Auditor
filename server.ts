@@ -237,52 +237,69 @@ app.post("/api/audit/amazon", async (req, res) => {
     if (!amazonTitle) amazonTitle = $('h1').first().text().trim() || "";
 
     // --- 1. Price Extraction (fixed) ---
-    // Strategy: target the "price to pay" / buybox price specifically,
-    // NOT the first .a-offscreen which can be a strikethrough or S&S price.
+    // IMPORTANT: On EU health/food/supplement products Amazon renders a unit price
+    // (e.g. "€9.04 / 10g") BEFORE the total price in DOM order inside corePriceDisplay.
+    // The unit price uses data-a-color="secondary" or class "a-text-price".
+    // The total/buybox price uses data-a-color="base" or class "apexPriceToPay"/"priceToPay".
+    // We must skip secondary/unit price elements and target the total price specifically.
+
     let amazonPrice = "";
 
-    // 1a. apexPriceToPay — the authoritative "price to pay" element, present on most modern listings
+    // 1a. apexPriceToPay — the explicit "price to pay" container; most reliable
     amazonPrice = $('.apexPriceToPay .a-offscreen').first().text().trim();
 
-    // 1b. priceToPay class (alias used on some locales)
+    // 1b. priceToPay class — alias used on some locales/layouts
     if (!amazonPrice) {
       amazonPrice = $('.priceToPay .a-offscreen').first().text().trim();
     }
 
-    // 1c. The buybox price widget — the <span id="price_inside_buybox"> is rendered for
-    //     third-party seller buyboxes and is always the current offer price
+    // 1c. price_inside_buybox — rendered for third-party seller buyboxes
     if (!amazonPrice) {
       amazonPrice = $('#price_inside_buybox').text().trim();
     }
 
-    // 1d. Core price display — but ONLY the first child .a-price that has class 'a-color-price'
-    //     (black/active price), explicitly skip .a-text-strike (crossed-out) and
-    //     .a-size-mini (small secondary prices like S&S)
+    // 1d. corePriceDisplay — but only the .a-price with data-a-color="base"
+    //     SKIP any .a-price with data-a-color="secondary" (those are unit prices)
+    //     SKIP any .a-price that is followed by a unit-of-measure sibling text ("/ 10 g", "/ 100 ml", etc.)
     if (!amazonPrice) {
       $('#corePriceDisplay_desktop_feature_div .a-price, #corePrice_desktop .a-price').each((_, el) => {
         const $el = $(el);
-        // Skip strikethrough prices and small secondary prices
-        if ($el.hasClass('a-text-strike') || $el.hasClass('a-size-mini') || $el.hasClass('a-color-secondary')) return;
+        const color = $el.attr('data-a-color') || '';
+        // Skip secondary color (unit prices) and explicitly strike-through prices
+        if (color === 'secondary' || $el.hasClass('a-text-price') || $el.hasClass('a-text-strike')) return;
+        // Skip if the next sibling text looks like a unit denominator ("/ 10 g", "/ 100 ml", "/stuk", etc.)
+        const nextSiblingText = ($el.next().text() + ' ' + $el.parent().text()).toLowerCase();
+        if (/\/\s*(10\s*g|100\s*g|kg|ml|l|100\s*ml|stuk|piece|st\b)/.test(nextSiblingText)) return;
         const candidate = $el.find('.a-offscreen').first().text().trim();
         if (candidate) {
           amazonPrice = candidate;
-          return false; // break
+          return false; // break .each()
         }
       });
     }
 
-    // 1e. Fallback: acer/apex identifier
+    // 1e. corePrice_feature_div — reconstruct from whole + fraction parts to be fully explicit
+    //     This is immune to unit-price confusion because it targets the specific price-whole span
     if (!amazonPrice) {
-      amazonPrice = $('.apex-core-price-identifier .a-offscreen').first().text().trim();
+      const priceWhole = $('#corePrice_feature_div .a-price-whole').first().text().replace(/[.,]$/, '').trim();
+      const priceFraction = $('#corePrice_feature_div .a-price-fraction').first().text().trim();
+      if (priceWhole) {
+        amazonPrice = priceFraction ? `${priceWhole},${priceFraction}` : priceWhole;
+      }
     }
 
-    // 1f. Last resort: any .a-offscreen inside a non-strike price block in the buybox section
+    // 1f. corePriceDisplay whole+fraction — same technique for the desktop display variant
     if (!amazonPrice) {
-      $('#buybox .a-price:not(.a-text-strike) .a-offscreen, #buyBoxInner .a-price:not(.a-text-strike) .a-offscreen')
-        .each((_, el) => {
-          const candidate = $(el).text().trim();
-          if (candidate) { amazonPrice = candidate; return false; }
-        });
+      const priceWhole = $('#corePriceDisplay_desktop_feature_div .a-price-whole').first().text().replace(/[.,]$/, '').trim();
+      const priceFraction = $('#corePriceDisplay_desktop_feature_div .a-price-fraction').first().text().trim();
+      if (priceWhole) {
+        amazonPrice = priceFraction ? `${priceWhole},${priceFraction}` : priceWhole;
+      }
+    }
+
+    // 1g. apex-core-price fallback
+    if (!amazonPrice) {
+      amazonPrice = $('.apex-core-price-identifier .a-offscreen').first().text().trim();
     }
 
     amazonPrice = amazonPrice.replace(/\s+/g, ' ').trim();
@@ -880,40 +897,20 @@ async function goToProduct(page: any, searchTerm: string) {
     title = await page.title().catch(() => '');
     if (!isAkamaiChallenge(content, title)) return true;
 
-    // FIX Issue 4: Fresh-context retry — navigate directly to the search URL on the same page
-    // (avoids re-using a tainted JS session state that Akamai already flagged)
-    console.log('[BOL] Retrying with cleared page state...');
+    // Last resort: navigate back to homepage to reset session state
+    // (page.reload() re-triggers the same WAF challenge; homepage resets it)
+    console.log('[BOL] Retrying via homepage navigation to reset Akamai session...');
+    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
+    await page.waitForTimeout(2_000);
+    // Try waiting again for the challenge to resolve after fresh navigation
     try {
-      // Clear cookies/storage for this page to reset session state
-      await page.context().clearCookies().catch(() => null);
-      // Re-inject consent cookies
-      await page.context().addCookies([
-        { name: 'consent-platform-cookie-grp-1', value: '1', domain: '.bol.com', path: '/' },
-        { name: 'consent-platform-cookie-grp-2', value: '1', domain: '.bol.com', path: '/' },
-        { name: 'consent-platform-cookie-grp-3', value: '1', domain: '.bol.com', path: '/' },
-        { name: 'consent-platform-cookie-grp-4', value: '1', domain: '.bol.com', path: '/' },
-        { name: 'consent-platform-cookie-grp-gdpr', value: '1', domain: '.bol.com', path: '/' },
-        { name: 'CONSENTMGR', value: 'c1:1%7Cc2:1%7Cc3:1%7Cc4:1%7Cts:' + Date.now() + '%7Cconsent:true', domain: '.bol.com', path: '/' },
-      ]).catch(() => null);
-
-      // Wait a moment to simulate non-bot pacing
-      await page.waitForTimeout(2_000);
-      await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
-      await page.waitForTimeout(2_000);
-
-      // Second auto-resolve wait
-      try {
-        await page.waitForFunction(
-          () => {
-            const t = document.title.toLowerCase();
-            if (t !== 'bol' && t !== 'bol.com' && t !== '') return true;
-            if (document.documentElement.outerHTML.includes('lang=\"nl-NL\"')) return true;
-            if (document.body && document.body.innerHTML.length > 20000) return true;
-            return false;
-          },
-          { timeout: 30_000, polling: 500 }
-        );
-      } catch (_) {}
+      await page.waitForFunction(() => {
+        const t = document.title.toLowerCase();
+        if (t !== 'bol' && t !== 'bol.com' && t !== '') return true;
+        if (document.documentElement.outerHTML.includes('lang="nl-NL"')) return true;
+        if (document.body && document.body.innerHTML.length > 20000) return true;
+        return false;
+      }, { timeout: 30_000, polling: 500 });
     } catch (_) {}
 
     content = await page.content().catch(() => '');
@@ -1215,8 +1212,8 @@ async function goToProduct(page: any, searchTerm: string) {
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
       await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
       await page.waitForTimeout(1_500);
-      // FIX: Check for WAF challenge AFTER navigating to the product page —
-      // the product URL navigation can itself trigger a new Akamai challenge
+      // WAF check after product navigation — Railway IPs trigger a fresh Akamai challenge
+      // on every new navigation, including the product page itself
       await waitForAkamai();
     } else {
       const debugTitle = await page.title().catch(() => '');
