@@ -132,7 +132,7 @@ app.post("/api/audit/amazon", async (req, res) => {
 
     try {
       console.log(`Auditing Amazon ${asin} on ${domain} (Target Zip: ${locConfig.zip})...`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       
       try {
         const cookieButtons = ['#sp-cc-accept', 'input[name="accept"]', '#cookie-accept', '#accept-cookies', '.a-button-inner input[data-action="accept-cookies"]'];
@@ -712,9 +712,9 @@ async function goToProduct(page: any, searchTerm: string) {
     let title = await page.title().catch(() => '');
     if (!isAkamaiChallenge(content, title)) return true;
     console.log('[BOL] Akamai WAF challenge detected — waiting for auto-resolve...');
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null);
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null);
         await page.waitForTimeout(1_000);
         content = await page.content().catch(() => '');
         title = await page.title().catch(() => '');
@@ -723,15 +723,15 @@ async function goToProduct(page: any, searchTerm: string) {
           return true;
         }
         console.log(`[BOL] Challenge still present after attempt ${attempt + 1}`);
-        await page.waitForTimeout(2_000);
+        await page.waitForTimeout(1_000);
       } catch (e) {
         console.log(`[BOL] Challenge wait error:`, (e as Error).message);
       }
     }
     // Last resort: reload
     console.log('[BOL] Trying full reload...');
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
-    await page.waitForTimeout(2_000);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null);
+    await page.waitForTimeout(1_500);
     content = await page.content().catch(() => '');
     title = await page.title().catch(() => '');
     return !isAkamaiChallenge(content, title);
@@ -785,7 +785,7 @@ async function goToProduct(page: any, searchTerm: string) {
   // Step 2: Navigate to HOMEPAGE first (not search URL) to establish a legitimate session
   console.log('[BOL] Step 2: Navigating to homepage first...');
   try {
-    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 15_000 });
     await page.waitForTimeout(1_000);
   } catch (e) {
     console.log(`[BOL] Homepage navigation warning: ${(e as Error).message}`);
@@ -868,7 +868,7 @@ async function goToProduct(page: any, searchTerm: string) {
   if (!searchWorked) {
     console.log('[BOL] Search box not found — falling back to direct URL navigation');
     try {
-      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
     } catch (_) {}
   }
   // Step 6: Wait for search results page to load
@@ -890,7 +890,7 @@ async function goToProduct(page: any, searchTerm: string) {
     console.warn('[BOL] IP blocked — pausing then retrying...');
     await page.waitForTimeout(5_000);
     await page.setViewportSize({ width: Math.floor(Math.random() * (420 - 375 + 1)) + 375, height: 844 });
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => null);
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => null);
     await page.waitForTimeout(1_000);
     content = await page.content().catch(() => '');
     if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') ||
@@ -955,7 +955,7 @@ async function goToProduct(page: any, searchTerm: string) {
     if (productHref) {
       console.log(`[BOL] Navigating to product: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
-      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => null);
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => null);
       await page.waitForTimeout(1_000);
     } else {
       const debugTitle = await page.title().catch(() => '');
@@ -971,8 +971,8 @@ async function goToProduct(page: any, searchTerm: string) {
 }
 
 async function extractCatalogue(page: any) {
-  await page.waitForLoadState('load', { timeout: 45_000 }).catch(() => null);
-  await page.waitForLoadState('networkidle', { timeout: 45_000 }).catch(() => null);
+  await page.waitForLoadState('load', { timeout: 10_000 }).catch(() => null);
+  await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => null);
   await page.waitForTimeout(1_200);
 
   await page.mouse.wheel(0, 400);
@@ -1277,6 +1277,9 @@ app.post("/api/audit/bol", async (req, res) => {
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-zygote',
         '--disable-blink-features=AutomationControlled'
       ]
     };
