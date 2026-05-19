@@ -236,33 +236,95 @@ app.post("/api/audit/amazon", async (req, res) => {
     if (!amazonTitle) amazonTitle = $('meta[name="title"]').attr('content')?.split(': Amazon')[0] || "";
     if (!amazonTitle) amazonTitle = $('h1').first().text().trim() || "";
 
-    // --- 1. Price Extraction ---
-    let amazonPrice = $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
-                      $('#corePrice_desktop .a-price .a-offscreen').first().text().trim() ||
-                      $('.apex-core-price-identifier .a-offscreen').first().text().trim() ||
-                      $('#price_inside_buybox').text().trim() ||
-                      $('.apexPriceToPay .a-offscreen').first().text().trim() ||
-                      $('.a-price.priceToPay .a-offscreen').first().text().trim() ||
-                      $('.a-price .a-offscreen').first().text().trim() || "";
+    // --- 1. Price Extraction (fixed) ---
+    // Strategy: target the "price to pay" / buybox price specifically,
+    // NOT the first .a-offscreen which can be a strikethrough or S&S price.
+    let amazonPrice = "";
+
+    // 1a. apexPriceToPay — the authoritative "price to pay" element, present on most modern listings
+    amazonPrice = $('.apexPriceToPay .a-offscreen').first().text().trim();
+
+    // 1b. priceToPay class (alias used on some locales)
+    if (!amazonPrice) {
+      amazonPrice = $('.priceToPay .a-offscreen').first().text().trim();
+    }
+
+    // 1c. The buybox price widget — the <span id="price_inside_buybox"> is rendered for
+    //     third-party seller buyboxes and is always the current offer price
+    if (!amazonPrice) {
+      amazonPrice = $('#price_inside_buybox').text().trim();
+    }
+
+    // 1d. Core price display — but ONLY the first child .a-price that has class 'a-color-price'
+    //     (black/active price), explicitly skip .a-text-strike (crossed-out) and
+    //     .a-size-mini (small secondary prices like S&S)
+    if (!amazonPrice) {
+      $('#corePriceDisplay_desktop_feature_div .a-price, #corePrice_desktop .a-price').each((_, el) => {
+        const $el = $(el);
+        // Skip strikethrough prices and small secondary prices
+        if ($el.hasClass('a-text-strike') || $el.hasClass('a-size-mini') || $el.hasClass('a-color-secondary')) return;
+        const candidate = $el.find('.a-offscreen').first().text().trim();
+        if (candidate) {
+          amazonPrice = candidate;
+          return false; // break
+        }
+      });
+    }
+
+    // 1e. Fallback: acer/apex identifier
+    if (!amazonPrice) {
+      amazonPrice = $('.apex-core-price-identifier .a-offscreen').first().text().trim();
+    }
+
+    // 1f. Last resort: any .a-offscreen inside a non-strike price block in the buybox section
+    if (!amazonPrice) {
+      $('#buybox .a-price:not(.a-text-strike) .a-offscreen, #buyBoxInner .a-price:not(.a-text-strike) .a-offscreen')
+        .each((_, el) => {
+          const candidate = $(el).text().trim();
+          if (candidate) { amazonPrice = candidate; return false; }
+        });
+    }
+
     amazonPrice = amazonPrice.replace(/\s+/g, ' ').trim();
     let listPrice = $('.basisPrice .a-offscreen').text().trim() || "";
-    // --- 2. Shipping Time Extraction ---
+    // --- 2. Shipping Time Extraction (fixed) ---
     let rawShippingTime = "";
-    const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim();
-    const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().trim();
-    
-    // Often secondary contains "Fastest delivery" which is what we want
-    if (secondaryDelivery && secondaryDelivery.toLowerCase().includes('fastest')) {
-      rawShippingTime = secondaryDelivery;
+
+    // Priority order for fastest/earliest delivery message:
+    // 1. data-csa-c-delivery-time attribute on the FIRST span in the PRIMARY slot
+    //    (this attribute contains the machine-readable date, most reliable)
+    // 2. The full text of the PRIMARY slot (human readable, e.g. "Morgen, 20 mei")
+    // 3. The SECONDARY slot only as a true fallback
+
+    const primarySlot = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE');
+    const secondarySlot = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE');
+
+    // Try structured date attribute from the primary slot first
+    const primaryDeliveryAttr = primarySlot.find('span[data-csa-c-delivery-time]').first().attr('data-csa-c-delivery-time');
+    if (primaryDeliveryAttr) {
+      rawShippingTime = primaryDeliveryAttr;
     } else {
-      const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
-      const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
-      if (deliveryTimeAttr) {
-        rawShippingTime = deliveryTimeAttr;
+      // Try primary slot text
+      const primaryText = primarySlot.text().trim();
+      if (primaryText) {
+        rawShippingTime = primaryText;
       } else {
-        rawShippingTime = primaryDelivery || deliveryBlock.find('.a-text-bold').first().text().trim() || deliveryBlock.text().trim() || "";
+        // Last resort: secondary slot text
+        rawShippingTime = secondarySlot.text().trim();
       }
     }
+
+    // Fallback to legacy delivery block selectors if all above are empty
+    if (!rawShippingTime) {
+      const legacyBlock = $('#mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
+      const legacyAttr = legacyBlock.find('span[data-csa-c-delivery-time]').first().attr('data-csa-c-delivery-time');
+      if (legacyAttr) {
+        rawShippingTime = legacyAttr;
+      } else {
+        rawShippingTime = legacyBlock.find('.a-text-bold').first().text().trim() || legacyBlock.text().trim();
+      }
+    }
+
     rawShippingTime = rawShippingTime.replace(/\s+/g, ' ').trim();
 
     let amazonDesc = $('#productDescription').text().trim();
@@ -270,14 +332,67 @@ app.post("/api/audit/amazon", async (req, res) => {
     
     const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
-    // --- 3. Buybox Owner Extraction (Modern tabular design first) ---
-    let amazonBuyboxOwner = $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
-                            $('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
-                            $('#sellerProfileTriggerId').first().text().trim() ||
-                            $('.offer-display-feature-text-message').first().text().trim() ||
-                            $('#merchant-info a').first().text().trim();
-    // Clean up if it contains "Sold by" or similar
-    amazonBuyboxOwner = amazonBuyboxOwner.replace(/Sold by\s*:?\s*/gi, '').replace(/Venduto da\s*:?\s*/gi, '').trim();
+    // --- 3. Buybox Owner Extraction (fixed) ---
+    // Covers all EU locale "Sold by" attribute variants and prioritizes
+    // the seller profile link (most reliable for third-party sellers).
+    let amazonBuyboxOwner = "";
+
+    // 3a. Best source: the seller profile link — present for ALL third-party sellers
+    //     and absent only when Amazon itself is the seller
+    const sellerLink = $('#sellerProfileTriggerId, #merchant-info a[href*="seller"], .tabular-buybox-text a[href*="seller"]').first();
+    if (sellerLink.length && sellerLink.text().trim()) {
+      amazonBuyboxOwner = sellerLink.text().trim();
+    }
+
+    // 3b. Tabular buybox "Sold by" row — covers modern desktop layout
+    //     Must handle all EU locale attribute values
+    if (!amazonBuyboxOwner) {
+      const soldByAttrVariants = [
+        'Sold by', 'Verkauf durch', 'Verkoop door', 'Vendu par', 'Vendido por',
+        'Venduto da', 'Sprzedawca', 'Säljs av', 'Sold by Amazon', 'Solgt af'
+      ];
+      for (const attrVal of soldByAttrVariants) {
+        const cell = $(`div[tabular-attribute-name="${attrVal}"] .tabular-buybox-text`);
+        if (cell.length) {
+          // Prefer the link text (third-party seller); fall back to full cell text
+          const linkText = cell.find('a').first().text().trim();
+          const cellText = cell.text().trim();
+          const candidate = linkText || cellText;
+          if (candidate && candidate.length > 0) {
+            amazonBuyboxOwner = candidate;
+            break;
+          }
+        }
+      }
+    }
+
+    // 3c. offer-display-feature-text-message (non-tabular layout fallback)
+    if (!amazonBuyboxOwner) {
+      amazonBuyboxOwner = $('.offer-display-feature-text-message').first().text().trim();
+    }
+
+    // 3d. merchant-info block (legacy fallback)
+    if (!amazonBuyboxOwner) {
+      amazonBuyboxOwner = $('#merchant-info').text().trim();
+    }
+
+    // Clean: strip label prefixes in any language
+    amazonBuyboxOwner = amazonBuyboxOwner
+      .replace(/Sold by\s*:?\s*/gi, '')
+      .replace(/Verkauf durch\s*:?\s*/gi, '')
+      .replace(/Verkoop door\s*:?\s*/gi, '')
+      .replace(/Vendu par\s*:?\s*/gi, '')
+      .replace(/Vendido por\s*:?\s*/gi, '')
+      .replace(/Venduto da\s*:?\s*/gi, '')
+      .replace(/Sprzedawca\s*:?\s*/gi, '')
+      .replace(/Säljs av\s*:?\s*/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // Normalize any "Amazon.xx" regional variant to just "Amazon"
+    if (/^amazon(\.[a-z]{2,3}(\.[a-z]{2})?)?$/i.test(amazonBuyboxOwner)) {
+      amazonBuyboxOwner = 'Amazon';
+    }
 
     // --- 7. Hardened Image Extraction ---
     const imageMap = new Map<string, string>();
@@ -564,7 +679,7 @@ app.post("/api/audit/amazon", async (req, res) => {
         if (targetDate) {
           targetDate.setHours(0, 0, 0, 0);
           const diffTime = targetDate.getTime() - today.getTime();
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
           if (diffDays >= 0) shippingDays = diffDays.toString();
         }
       }
@@ -796,7 +911,7 @@ async function goToProduct(page: any, searchTerm: string) {
             if (document.body && document.body.innerHTML.length > 20000) return true;
             return false;
           },
-          { timeout: 20_000, polling: 500 }
+          { timeout: 30_000, polling: 500 }
         );
       } catch (_) {}
     } catch (_) {}
@@ -1099,7 +1214,10 @@ async function goToProduct(page: any, searchTerm: string) {
       console.log(`[BOL] Navigating to product: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
       await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
-      await page.waitForTimeout(1_000);
+      await page.waitForTimeout(1_500);
+      // FIX: Check for WAF challenge AFTER navigating to the product page —
+      // the product URL navigation can itself trigger a new Akamai challenge
+      await waitForAkamai();
     } else {
       const debugTitle = await page.title().catch(() => '');
       const debugUrl = page.url();
