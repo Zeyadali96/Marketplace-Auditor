@@ -901,8 +901,21 @@ async function goToProduct(page: any, searchTerm: string) {
       await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
     } catch (_) {}
   }
-  // Step 6: Wait for search results page to load
-  await page.waitForTimeout(1_500);
+  // Step 6: Wait intelligently for search results or product redirect
+  await page.waitForTimeout(1_000);
+  try {
+    await page.waitForFunction(() => {
+      // Actively poll until the search API injects the grid OR redirects to a product page
+      return window.location.href.includes('/p/') || 
+             document.querySelector('[data-test="product-item"]') ||
+             document.querySelector('.product-item--row') ||
+             document.querySelector('.ui-kit-card') ||
+             document.body.innerText.toLowerCase().includes('0 resultaten') ||
+             document.body.innerText.toLowerCase().includes('geen resultaten');
+    }, { timeout: 15_000, polling: 500 });
+  } catch (e) {
+    console.log('[BOL] Timeout waiting for search results or redirect to settle.');
+  }
   await waitForAkamai();
   
   // Extra check: if we navigated directly or after search, we might hit a secondary consent banner
@@ -991,11 +1004,10 @@ async function goToProduct(page: any, searchTerm: string) {
       const debugTitle = await page.title().catch(() => '');
       const debugUrl = page.url();
       const debugContent = await page.content().catch(() => '');
+      const snippet = debugContent.replace(/\s+/g, ' ').substring(0, 250);
       console.error(`[BOL] FAILED to find product link.`);
       console.error(`[BOL] Title: "${debugTitle}", URL: "${debugUrl}"`);
-      // Truncate to avoid polluting logs
-      console.error(`[BOL] Content preview: ${debugContent.substring(0, 1500)}`);
-      throw new Error(`No product link found on the Bol.com results page. Title: "${debugTitle}", URL: "${debugUrl}"`);
+      throw new Error(`No product link found on Bol.com. Title: "${debugTitle}", Snippet: ${snippet}`);
     }
   }
 }
