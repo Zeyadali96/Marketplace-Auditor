@@ -236,28 +236,32 @@ app.post("/api/audit/amazon", async (req, res) => {
     if (!amazonTitle) amazonTitle = $('meta[name="title"]').attr('content')?.split(': Amazon')[0] || "";
     if (!amazonTitle) amazonTitle = $('h1').first().text().trim() || "";
 
-    let amazonPrice = $('.apex-core-price-identifier .a-offscreen').first().text().trim();
-    if (!amazonPrice) {
-      amazonPrice = $('.a-price .a-offscreen').first().text().trim() || 
-                    $('.apexPriceToPay .a-offscreen').first().text().trim() ||
-                    $('#price_inside_buybox').text().trim() ||
-                    $('#priceBlockPremiumPrice').text().trim() || 
-                    $('.a-price-whole').first().parent().text().trim() || "";
-    }
+    // --- 1. Price Extraction ---
+    let amazonPrice = $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
+                      $('#corePrice_desktop .a-price .a-offscreen').first().text().trim() ||
+                      $('.apex-core-price-identifier .a-offscreen').first().text().trim() ||
+                      $('#price_inside_buybox').text().trim() ||
+                      $('.apexPriceToPay .a-offscreen').first().text().trim() ||
+                      $('.a-price.priceToPay .a-offscreen').first().text().trim() ||
+                      $('.a-price .a-offscreen').first().text().trim() || "";
     amazonPrice = amazonPrice.replace(/\s+/g, ' ').trim();
-
     let listPrice = $('.basisPrice .a-offscreen').text().trim() || "";
-
+    // --- 2. Shipping Time Extraction ---
     let rawShippingTime = "";
-    const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
-    const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
+    const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim();
+    const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().trim();
     
-    if (deliveryTimeAttr) {
-      rawShippingTime = deliveryTimeAttr;
+    // Often secondary contains "Fastest delivery" which is what we want
+    if (secondaryDelivery && secondaryDelivery.toLowerCase().includes('fastest')) {
+      rawShippingTime = secondaryDelivery;
     } else {
-      rawShippingTime = deliveryBlock.find('.a-text-bold').first().text().trim() || 
-                       deliveryBlock.find('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim() ||
-                       deliveryBlock.text().trim() || "";
+      const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
+      const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
+      if (deliveryTimeAttr) {
+        rawShippingTime = deliveryTimeAttr;
+      } else {
+        rawShippingTime = primaryDelivery || deliveryBlock.find('.a-text-bold').first().text().trim() || deliveryBlock.text().trim() || "";
+      }
     }
     rawShippingTime = rawShippingTime.replace(/\s+/g, ' ').trim();
 
@@ -266,27 +270,12 @@ app.post("/api/audit/amazon", async (req, res) => {
     
     const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
-    // Buybox Owner Extraction
-    let amazonBuyboxOwner = "";
-    
-    // 1. Try to find the specific "Merchant/Sold By" display feature provided in the user's snippet
-    const merchantInfo = $('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message, div[offer-display-feature-name="desktop-shipping-info"] .offer-display-feature-text-message');
-    if (merchantInfo.length > 0) {
-      amazonBuyboxOwner = merchantInfo.first().text().trim();
-    }
-
-    if (!amazonBuyboxOwner) {
-      amazonBuyboxOwner = $('#sellerProfileTriggerId').first().text().trim();
-    }
-    if (!amazonBuyboxOwner) {
-      amazonBuyboxOwner = $('#merchant-info a').first().text().trim();
-    }
-    if (!amazonBuyboxOwner) {
-      amazonBuyboxOwner = $('#shipToSoldByView_feature_div').text().trim();
-    }
-    if (!amazonBuyboxOwner) {
-      amazonBuyboxOwner = $('.offer-display-feature-text-message').first().text().trim();
-    }
+    // --- 3. Buybox Owner Extraction (Modern tabular design first) ---
+    let amazonBuyboxOwner = $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
+                            $('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
+                            $('#sellerProfileTriggerId').first().text().trim() ||
+                            $('.offer-display-feature-text-message').first().text().trim() ||
+                            $('#merchant-info a').first().text().trim();
     // Clean up if it contains "Sold by" or similar
     amazonBuyboxOwner = amazonBuyboxOwner.replace(/Sold by\s*:?\s*/gi, '').replace(/Venduto da\s*:?\s*/gi, '').trim();
 
@@ -787,6 +776,15 @@ async function goToProduct(page: any, searchTerm: string) {
       if (!clicked) {
         // JS fallback
         const jsClicked = await page.evaluate(() => {
+          const btns = [
+            document.querySelector('button#js-accept-all-cookies'),
+            document.querySelector('[data-test="consent-assign-all"]'),
+            document.querySelector('button[data-test="consent-modal-accept"]')
+          ];
+          for (const b of btns) {
+            if (b) { (b as HTMLElement).click(); return true; }
+          }
+          
           const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
           const target = buttons.find(b => {
             const t = (b.textContent || '').toLowerCase();
@@ -803,6 +801,14 @@ async function goToProduct(page: any, searchTerm: string) {
           await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null);
         }
       }
+      
+      // Force overlay removal if it still exists to prevent pointer-events blocks
+      await page.evaluate(() => {
+        const overlay = document.querySelector('.consent-modal, #consent-modal, .cookie-consent');
+        if (overlay) (overlay as HTMLElement).style.display = 'none';
+        document.body.style.overflow = 'auto';
+      }).catch(() => null);
+      
       await page.waitForTimeout(1000);
     } catch (_) {}
   };
