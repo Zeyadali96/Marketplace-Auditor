@@ -846,12 +846,12 @@ async function goToProduct(page: any, searchTerm: string) {
 
     // FIX Issue 5: Only treat generic-title pages as Akamai if they are also tiny
     // (real bol pages are always >20KB; the Pragma interstitial is always <5KB)
-    if (isBolTitle && c.includes('<meta name="Pragma" content="no-cache">') && c.length < 8000) {
+    if (isBolTitle && c.includes('<meta name="Pragma" content="no-cache">') && c.length < 25000) {
       return true;
     }
 
     // If title is generic AND page is tiny AND no Dutch content — almost certainly a challenge
-    if (isBolTitle && !c.includes('lang=\"nl-NL\"') && c.length < 5000) {
+    if (isBolTitle && !c.includes('lang=\"nl-NL\"') && c.length < 25000) {
       return true;
     }
 
@@ -900,6 +900,7 @@ async function goToProduct(page: any, searchTerm: string) {
     // Last resort: navigate back to homepage to reset session state
     // (page.reload() re-triggers the same WAF challenge; homepage resets it)
     console.log('[BOL] Retrying via homepage navigation to reset Akamai session...');
+    const currentUrl = page.url();
     await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
     await page.waitForTimeout(2_000);
     // Try waiting again for the challenge to resolve after fresh navigation
@@ -920,6 +921,21 @@ async function goToProduct(page: any, searchTerm: string) {
       const snippet = content.replace(/\s+/g, ' ').substring(0, 150);
       throw new Error(`WAF_BLOCKED: Permanently stuck on Akamai JS challenge. IP or Fingerprint rejected. Snippet: ${snippet}`);
     }
+
+    // We passed the challenge on the homepage. Navigate back to the original target URL if needed.
+    if (currentUrl && !currentUrl.endsWith('.bol.com/nl/nl/') && !currentUrl.endsWith('.bol.com/nl/nl')) {
+      console.log(`[BOL] WAF resolved. Navigating back to original target: ${currentUrl}`);
+      await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
+      await page.waitForTimeout(1_500);
+      
+      // Safety check: is it challenging us again on the original URL?
+      content = await page.content().catch(() => '');
+      title = await page.title().catch(() => '');
+      if (isAkamaiChallenge(content, title)) {
+        throw new Error(`WAF_BLOCKED: Akamai challenge re-triggered on target URL. Use a residential proxy.`);
+      }
+    }
+
     return true;
   };
 
