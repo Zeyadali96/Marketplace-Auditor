@@ -691,15 +691,16 @@ async function goToProduct(page: any, searchTerm: string) {
     const isBolTitle = t.toLowerCase() === 'bol' || t.toLowerCase() === 'bol.com';
     
     // Explicitly prevent Cookie Consent or actual storefronts from being flagged as Akamai
-    if (c.includes('js-accept-all-cookies') || c.includes('consent-assign-all') || c.includes('search-input')) {
+    if (c.includes('js-accept-all-cookies') || c.includes('consent-assign-all') || c.includes('search-input') || c.includes('lang="nl-NL"')) {
       return false;
     }
-    // Only flag actual block pages, avoid c.includes('Akamai') because Bol uses Akamai CDN scripts on all pages
+    // Identify explicit blocks or the generic Pragma no-cache interstitial
     return c.includes('sec-if-cpt-container') ||
            c.includes('Toegang tot deze pagina is geweigerd') ||
            c.includes('Access Denied') ||
            c.includes('Pardon Our Interruption') ||
-           (isBolTitle && c.length < 5000 && !c.includes('lang="nl-NL"'));
+           (isBolTitle && c.includes('<meta name="Pragma" content="no-cache">')) ||
+           (isBolTitle && !c.includes('lang="nl-NL"'));
   };
   // Helper: wait for Akamai challenge to auto-resolve (Fail Fast to prevent Railway Timeout)
   const waitForAkamai = async () => {
@@ -723,10 +724,11 @@ async function goToProduct(page: any, searchTerm: string) {
         const t = document.title.toLowerCase();
         // If title is no longer generic bol, it might have resolved
         if (t !== 'bol' && t !== 'bol.com' && t !== '') return true;
-        // Or if it injected the real body
+        // Or if it injected the real body (Bol.com storefronts are large and have lang)
+        if (document.documentElement.outerHTML.includes('lang="nl-NL"')) return true;
         if (document.body && document.body.innerHTML.length > 20000) return true;
         return false;
-      }, { timeout: 15_000, polling: 500 });
+      }, { timeout: 20_000, polling: 500 });
     } catch (e) {
       console.log('[BOL] Akamai auto-resolve wait finished.');
     }
