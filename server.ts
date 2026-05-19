@@ -1147,9 +1147,7 @@ app.post("/api/sheets/fetch", async (req, res) => {
     await doc.loadInfo();
 
     const targetTabName = requestedSheetName || (mode === "bol" ? "Product data" : "Amazon Data");
-    const sheet = doc.sheetsByTitle[targetTabName] || 
-                  doc.sheetsByIndex.find(s => s.title.toLowerCase().trim() === targetTabName.toLowerCase());
-                  
+    const sheet = doc.sheetsByTitle[targetTabName];
     if (!sheet) {
       throw new Error(`Sheet tab "${targetTabName}" not found in the spreadsheet.`);
     }
@@ -1157,7 +1155,7 @@ app.post("/api/sheets/fetch", async (req, res) => {
     // Amazon Data tab has a category group row in row 1;
     // the real column headers (ASIN, AMZ title DE, …) are in row 2.
     // Product data tab has normal headers in row 1.
-    if (sheet.title.toLowerCase().trim() === 'amazon data') {
+    if (targetTabName === 'Amazon Data') {
       await sheet.loadHeaderRow(2);
     }
 
