@@ -235,17 +235,30 @@ app.post("/api/audit/amazon", async (req, res) => {
     }
     if (!amazonTitle) amazonTitle = $('meta[name="title"]').attr('content')?.split(': Amazon')[0] || "";
     if (!amazonTitle) amazonTitle = $('h1').first().text().trim() || "";
+// --- 1. Price Extraction ---
+    let buyBoxContext = $('#oneTimeBuyBox').length ? $('#oneTimeBuyBox') :
+                        $('#newAccordionRow').length ? $('#newAccordionRow') :
+                        $('#buyNewSection').length ? $('#buyNewSection') :
+                        $('#desktop_buybox').length ? $('#desktop_buybox') :
+                        $('#rightCol').length ? $('#rightCol') :
+                        $('body');
 
-    // --- 1. Price Extraction ---
-    let amazonPrice = $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
+    let amazonPrice = buyBoxContext.find('.priceToPay .a-offscreen').first().text().trim() ||
+                      buyBoxContext.find('.a-price .a-offscreen').first().text().trim() ||
+                      $('#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen').first().text().trim() ||
+                      $('#corePrice_desktop .priceToPay .a-offscreen').first().text().trim() ||
+                      $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
                       $('#corePrice_desktop .a-price .a-offscreen').first().text().trim() ||
-                      $('.apex-core-price-identifier .a-offscreen').first().text().trim() ||
+                      $('#buyNew_noncbb .a-price .a-offscreen').first().text().trim() ||
                       $('#price_inside_buybox').text().trim() ||
-                      $('.apexPriceToPay .a-offscreen').first().text().trim() ||
-                      $('.a-price.priceToPay .a-offscreen').first().text().trim() ||
-                      $('.a-price .a-offscreen').first().text().trim() || "";
+                      $('.apex-core-price-identifier .a-offscreen').first().text().trim() ||
+                      $('#desktop_buybox .apexPriceToPay .a-offscreen').first().text().trim() ||
+                      $('#desktop_buybox .priceToPay .a-offscreen').first().text().trim() ||
+                      $('#rightCol .a-price .a-offscreen').first().text().trim() || "";
     amazonPrice = amazonPrice.replace(/\s+/g, ' ').trim();
+
     let listPrice = $('.basisPrice .a-offscreen').text().trim() || "";
+
     // --- 2. Shipping Time Extraction ---
     let rawShippingTime = "";
     const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim();
@@ -271,13 +284,37 @@ app.post("/api/audit/amazon", async (req, res) => {
     const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
     // --- 3. Buybox Owner Extraction (Modern tabular design first) ---
-    let amazonBuyboxOwner = $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
+    let amazonBuyboxOwner = buyBoxContext.find('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[tabular-attribute-name="Verzonden en verkocht door"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[tabular-attribute-name="Dispatched from and sold by"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
+                            buyBoxContext.find('#sellerProfileTriggerId').first().text().trim() ||
+                            buyBoxContext.find('#merchant-info a').first().text().trim() ||
+                            $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
                             $('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
+                            $('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
+                            $('div[tabular-attribute-name="Verzonden en verkocht door"] .tabular-buybox-text').first().text().trim() ||
+                            $('div[tabular-attribute-name="Dispatched from and sold by"] .tabular-buybox-text').first().text().trim() ||
+                            $('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
                             $('#sellerProfileTriggerId').first().text().trim() ||
-                            $('.offer-display-feature-text-message').first().text().trim() ||
                             $('#merchant-info a').first().text().trim();
+
+    if (!amazonBuyboxOwner) {
+      let mInfo = (buyBoxContext.find('#merchant-info').first().text() || $('#merchant-info').first().text()).toLowerCase();
+      if (mInfo.includes('sold by amazon') || mInfo.includes('verkauf durch amazon') || mInfo.includes('dispatched from and sold by amazon') || mInfo.includes('expédié et vendu par amazon') || mInfo.includes('amazon')) {
+        amazonBuyboxOwner = "Amazon";
+      } else {
+        amazonBuyboxOwner = buyBoxContext.find('.offer-display-feature-text-message').first().text().trim() ||
+                            $('#desktop_buybox .offer-display-feature-text-message').first().text().trim() || 
+                            $('#rightCol .offer-display-feature-text-message').first().text().trim() ||
+                            $('#merchant-info').first().text().trim();
+      }
+    }
+
     // Clean up if it contains "Sold by" or similar
-    amazonBuyboxOwner = amazonBuyboxOwner.replace(/Sold by\s*:?\s*/gi, '').replace(/Venduto da\s*:?\s*/gi, '').trim();
+    amazonBuyboxOwner = amazonBuyboxOwner.replace(/Sold by\s*:?\s*/gi, '').replace(/Venduto da\s*:?\s*/gi, '').replace(/Verkauf durch\s*:?\s*/gi, '').trim();
 
     // --- 7. Hardened Image Extraction ---
     const imageMap = new Map<string, string>();
