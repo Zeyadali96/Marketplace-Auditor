@@ -1353,12 +1353,12 @@ app.post("/api/audit/bol", async (req, res) => {
     const { ean, masterData } = req.body;
     if (!ean) throw new Error('Missing "ean" in request body');
 
-    // Railway deployment fix: keep headless as boolean true
+    // Railway deployment fix: keep headless as boolean false to bypass Playwright's default headless flag,
+    // and explicitly pass '--headless=new' to Chromium to use the new stealthier headless mode that doesn't need X11.
     const launchOpts: any = {
-      // Must remain `true` on Railway — no display is available in the container.
-      // Anti-detection is handled through Chrome flags and the stealth plugin instead.
-      headless: true,
+      headless: false,
       args: [
+        '--headless=new',
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',

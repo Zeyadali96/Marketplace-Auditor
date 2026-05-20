@@ -9,6 +9,7 @@ chromium.use(stealth());
   const browser = await chromium.launch({
     headless: false,
     args: [
+      '--headless=new',
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
