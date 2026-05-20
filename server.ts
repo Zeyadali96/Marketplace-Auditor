@@ -1354,11 +1354,9 @@ app.post("/api/audit/bol", async (req, res) => {
     if (!ean) throw new Error('Missing "ean" in request body');
 
     const launchOpts: any = {
-      // Use Chromium's NEW headless mode — it shares the same rendering pipeline as
-      // a real Chrome window and is far harder for Akamai to fingerprint than the
-      // classic headless mode (headless: true). On Railway there is no display,
-      // but 'new' headless mode does not require one.
-      headless: 'new' as any,
+      // Must remain `true` on Railway — no display is available in the container.
+      // Anti-detection is handled through Chrome flags and the stealth plugin instead.
+      headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -1367,6 +1365,14 @@ app.post("/api/audit/bol", async (req, res) => {
         '--disable-gpu',
         '--window-size=1920,1080',
         '--disable-features=IsolateOrigins,site-per-process',
+        // Mask automation signals that Akamai probes for
+        '--disable-infobars',
+        '--disable-extensions',
+        '--disable-default-apps',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--password-store=basic',
+        '--use-mock-keychain',
         '--incognito'
       ]
     };
