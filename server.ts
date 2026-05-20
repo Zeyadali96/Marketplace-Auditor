@@ -1353,6 +1353,7 @@ app.post("/api/audit/bol", async (req, res) => {
     const { ean, masterData } = req.body;
     if (!ean) throw new Error('Missing "ean" in request body');
 
+    // Railway deployment fix: keep headless as boolean true
     const launchOpts: any = {
       // Must remain `true` on Railway — no display is available in the container.
       // Anti-detection is handled through Chrome flags and the stealth plugin instead.
