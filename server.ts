@@ -765,7 +765,7 @@ async function goToProduct(page: any, searchTerm: string) {
         if (document.documentElement.outerHTML.includes('lang="nl-NL"')) return true;
         if (document.body && document.body.innerHTML.length > 20000) return true;
         return false;
-      }, { timeout: 20_000, polling: 500 });
+      }, { timeout: 12_000, polling: 500 });
     } catch (e) {
       console.log('[BOL] Akamai auto-resolve wait finished.');
     }
@@ -776,7 +776,7 @@ async function goToProduct(page: any, searchTerm: string) {
     // Last resort: reload
     console.log('[BOL] Trying full reload...');
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null);
-    await page.waitForTimeout(1_000);
+    await page.waitForTimeout(500);
     
     content = await page.content().catch(() => '');
     title = await page.title().catch(() => '');
@@ -848,14 +848,14 @@ async function goToProduct(page: any, searchTerm: string) {
         document.body.style.overflow = 'auto';
       }).catch(() => null);
       
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(300);
     } catch (_) {}
   };
   // Step 2: Navigate to HOMEPAGE first (not search URL) to establish a legitimate session
   console.log('[BOL] Step 2: Navigating to homepage first...');
   try {
     await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
-    await page.waitForTimeout(1_000);
+    await page.waitForTimeout(500);
   } catch (e) {
     console.log(`[BOL] Homepage navigation warning: ${(e as Error).message}`);
   }
@@ -941,7 +941,6 @@ async function goToProduct(page: any, searchTerm: string) {
     } catch (_) {}
   }
   // Step 6: Wait intelligently for search results or product redirect
-  await page.waitForTimeout(1_000);
   try {
     await page.waitForFunction(() => {
       // Actively poll until the search API injects the grid OR redirects to a product page
@@ -951,7 +950,7 @@ async function goToProduct(page: any, searchTerm: string) {
              document.querySelector('.ui-kit-card') ||
              document.body.innerText.toLowerCase().includes('0 resultaten') ||
              document.body.innerText.toLowerCase().includes('geen resultaten');
-    }, { timeout: 15_000, polling: 500 });
+    }, { timeout: 8_000, polling: 500 });
   } catch (e) {
     console.log('[BOL] Timeout waiting for search results or redirect to settle.');
   }
@@ -970,10 +969,10 @@ async function goToProduct(page: any, searchTerm: string) {
   if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') ||
       content.includes('Human verification')) {
     console.warn('[BOL] IP blocked — pausing then retrying...');
-    await page.waitForTimeout(5_000);
+    await page.waitForTimeout(2_000);
     await page.setViewportSize({ width: Math.floor(Math.random() * (420 - 375 + 1)) + 375, height: 844 });
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
-    await page.waitForTimeout(1_000);
+    await page.waitForTimeout(500);
     content = await page.content().catch(() => '');
     if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') ||
         content.includes('Human verification')) {
@@ -1007,9 +1006,9 @@ async function goToProduct(page: any, searchTerm: string) {
     }
     if (!foundResults) {
       console.log('[BOL] Warning: Search results selectors not found, trying to find links directly...');
-      await page.waitForTimeout(1_000);
+      await page.waitForTimeout(500);
       await page.mouse.wheel(0, 500);
-      await page.waitForTimeout(1_000);
+      await page.waitForTimeout(500);
     }
     // Find the first product link
     const productHref = await page.evaluate(() => {
@@ -1038,7 +1037,7 @@ async function goToProduct(page: any, searchTerm: string) {
       console.log(`[BOL] Navigating to product: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
       await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
-      await page.waitForTimeout(1_000);
+      await page.waitForTimeout(500);
     } else {
       const debugTitle = await page.title().catch(() => '');
       const debugUrl = page.url();
@@ -1052,12 +1051,12 @@ async function goToProduct(page: any, searchTerm: string) {
 }
 
 async function extractCatalogue(page: any) {
-  await page.waitForLoadState('load', { timeout: 45_000 }).catch(() => null);
-  await page.waitForLoadState('networkidle', { timeout: 45_000 }).catch(() => null);
-  await page.waitForTimeout(1_200);
+  await page.waitForLoadState('load', { timeout: 15_000 }).catch(() => null);
+  await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => null);
+  await page.waitForTimeout(500);
 
   await page.mouse.wheel(0, 400);
-  await page.waitForTimeout(1_200);
+  await page.waitForTimeout(500);
 
   return await page.evaluate(() => {
     let title = '';
