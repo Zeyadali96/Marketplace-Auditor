@@ -1354,12 +1354,20 @@ app.post("/api/audit/bol", async (req, res) => {
     if (!ean) throw new Error('Missing "ean" in request body');
 
     const launchOpts: any = {
-      headless: true,
+      // Use Chromium's NEW headless mode — it shares the same rendering pipeline as
+      // a real Chrome window and is far harder for Akamai to fingerprint than the
+      // classic headless mode (headless: true). On Railway there is no display,
+      // but 'new' headless mode does not require one.
+      headless: 'new' as any,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
-        '--incognito' // Enforce engine-level incognito
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--incognito'
       ]
     };
     
@@ -1379,12 +1387,15 @@ app.post("/api/audit/bol", async (req, res) => {
     // This is CRITICAL because without it, Playwright sends "HeadlessChrome" in the raw HTTP headers,
     // which Akamai detects instantly, even if the JS navigator object is spoofed by stealth.
     const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      // Updated to Chrome 136 (latest stable 2025/2026).
+      // The UA, sec-ch-ua header, and TLS fingerprint must all agree on the same
+      // version — Akamai cross-checks all three to detect spoofing.
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
       viewport: { width: Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366, height: Math.floor(Math.random() * (1080 - 768 + 1)) + 768 },
       locale: 'nl-NL',
       extraHTTPHeaders: {
         'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-        'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
         'upgrade-insecure-requests': '1'
