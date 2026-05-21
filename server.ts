@@ -775,7 +775,7 @@ async function goToProduct(page: any, searchTerm: string) {
     if (!isAkamaiChallenge(content, title)) return true;
     // Last resort: reload
     console.log('[BOL] Trying full reload...');
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null);
+    await page.reload({ waitUntil: 'networkidle', timeout: 10_000 }).catch(() => null);
     await page.waitForTimeout(1_000);
     
     content = await page.content().catch(() => '');
@@ -805,7 +805,7 @@ async function goToProduct(page: any, searchTerm: string) {
           console.log(`[BOL] Clicking consent button: ${sel}`);
           // Awaiting navigation because clicking consent often triggers a page reload on Bol.com
           await Promise.all([
-            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null),
+            page.waitForNavigation({ waitUntil: 'networkidle', timeout: 5_000 }).catch(() => null),
             btn.click().catch(() => null)
           ]);
           clicked = true;
@@ -837,7 +837,7 @@ async function goToProduct(page: any, searchTerm: string) {
         }).catch(() => false);
         if (jsClicked) {
           console.log(`[BOL] Clicked consent via JS fallback`);
-          await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null);
+          await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 5_000 }).catch(() => null);
         }
       }
       
@@ -854,8 +854,8 @@ async function goToProduct(page: any, searchTerm: string) {
   // Step 2: Navigate to HOMEPAGE first (not search URL) to establish a legitimate session
   console.log('[BOL] Step 2: Navigating to homepage first...');
   try {
-    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'domcontentloaded', timeout: 20_000 });
-    await page.waitForTimeout(1_000);
+    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'networkidle', timeout: 20_000 });
+    await page.waitForTimeout(2_000);
   } catch (e) {
     console.log(`[BOL] Homepage navigation warning: ${(e as Error).message}`);
   }
@@ -890,7 +890,7 @@ async function goToProduct(page: any, searchTerm: string) {
         
         // Wait for navigation after pressing Enter
         await Promise.all([
-          page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null),
+          page.waitForNavigation({ waitUntil: 'networkidle', timeout: 10_000 }).catch(() => null),
           page.keyboard.press('Enter')
         ]);
         
@@ -916,14 +916,14 @@ async function goToProduct(page: any, searchTerm: string) {
           const searchTrigger = await page.$('button[data-test="search-button"], .search-toggle, [aria-label="Zoeken"]');
           if (searchTrigger) {
             await Promise.all([
-              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null),
+              page.waitForNavigation({ waitUntil: 'networkidle', timeout: 10_000 }).catch(() => null),
               searchTrigger.click().catch(() => null)
             ]);
             console.log(`[BOL] Typed "${searchTerm}" and clicked search button`);
             searchWorked = true;
           } else {
             await Promise.all([
-              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null),
+              page.waitForNavigation({ waitUntil: 'networkidle', timeout: 10_000 }).catch(() => null),
               page.keyboard.press('Enter')
             ]);
             searchWorked = true;
@@ -937,7 +937,7 @@ async function goToProduct(page: any, searchTerm: string) {
   if (!searchWorked) {
     console.log('[BOL] Search box not found — falling back to direct URL navigation');
     try {
-      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+      await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20_000 });
     } catch (_) {}
   }
   // Step 6: Wait intelligently for search results or product redirect
@@ -972,7 +972,7 @@ async function goToProduct(page: any, searchTerm: string) {
     console.warn('[BOL] IP blocked — pausing then retrying...');
     await page.waitForTimeout(5_000);
     await page.setViewportSize({ width: Math.floor(Math.random() * (420 - 375 + 1)) + 375, height: 844 });
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
+    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20_000 }).catch(() => null);
     await page.waitForTimeout(1_000);
     content = await page.content().catch(() => '');
     if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') ||
@@ -1037,7 +1037,7 @@ async function goToProduct(page: any, searchTerm: string) {
     if (productHref) {
       console.log(`[BOL] Navigating to product: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
-      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
+      await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 20_000 }).catch(() => null);
       await page.waitForTimeout(1_000);
     } else {
       const debugTitle = await page.title().catch(() => '');

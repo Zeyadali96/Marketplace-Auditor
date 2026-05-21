@@ -6,7 +6,24 @@ chromium.use(stealth());
   try {
     const browser = await chromium.launch({ 
       headless: false, 
-      args: ['--headless=new', '--no-sandbox'] 
+      args: [
+        '--headless=new',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-infobars',
+        '--disable-extensions',
+        '--disable-default-apps',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--password-store=basic',
+        '--use-mock-keychain',
+        '--incognito'
+      ] 
     });
     console.log("Launched!");
     const context = await browser.newContext({
