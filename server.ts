@@ -236,20 +236,15 @@ app.post("/api/audit/amazon", async (req, res) => {
     if (!amazonTitle) amazonTitle = $('meta[name="title"]').attr('content')?.split(': Amazon')[0] || "";
     if (!amazonTitle) amazonTitle = $('h1').first().text().trim() || "";
 // --- 1. Price Extraction ---
-    let buyBoxContext = $('#oneTimeBuyBox').length ? $('#oneTimeBuyBox') :
-                        $('#newAccordionRow').length ? $('#newAccordionRow') :
-                        $('#buyNewSection').length ? $('#buyNewSection') :
-                        $('#desktop_buybox').length ? $('#desktop_buybox') :
-                        $('#rightCol').length ? $('#rightCol') :
-                        $('body');
-
-    let amazonPrice = buyBoxContext.find('.priceToPay .a-offscreen').first().text().trim() ||
-                      buyBoxContext.find('.a-price .a-offscreen').first().text().trim() ||
+    let amazonPrice = $('input#twister-plus-price-data-price-display').attr('value') ||
+                      $('input#twister-plus-price-data-price').attr('value') ||
                       $('#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen').first().text().trim() ||
                       $('#corePrice_desktop .priceToPay .a-offscreen').first().text().trim() ||
                       $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
                       $('#corePrice_desktop .a-price .a-offscreen').first().text().trim() ||
                       $('#buyNew_noncbb .a-price .a-offscreen').first().text().trim() ||
+                      $('#buyNewSection .a-price .a-offscreen').first().text().trim() ||
+                      $('#desktop_buybox .a-price .a-offscreen').first().text().trim() ||
                       $('#price_inside_buybox').text().trim() ||
                       $('.apex-core-price-identifier .a-offscreen').first().text().trim() ||
                       $('#desktop_buybox .apexPriceToPay .a-offscreen').first().text().trim() ||
@@ -261,19 +256,18 @@ app.post("/api/audit/amazon", async (req, res) => {
 
     // --- 2. Shipping Time Extraction ---
     let rawShippingTime = "";
-    const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim();
+    const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim() || $('#deliveryBlockMessage').text().trim();
     const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().trim();
     
     // Often secondary contains "Fastest delivery" which is what we want
     if (secondaryDelivery && secondaryDelivery.toLowerCase().includes('fastest')) {
       rawShippingTime = secondaryDelivery;
     } else {
-      const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
-      const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
+      const deliveryTimeAttr = $('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
       if (deliveryTimeAttr) {
         rawShippingTime = deliveryTimeAttr;
       } else {
-        rawShippingTime = primaryDelivery || deliveryBlock.find('.a-text-bold').first().text().trim() || deliveryBlock.text().trim() || "";
+        rawShippingTime = primaryDelivery || "";
       }
     }
     rawShippingTime = rawShippingTime.replace(/\s+/g, ' ').trim();
@@ -284,15 +278,7 @@ app.post("/api/audit/amazon", async (req, res) => {
     const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
     // --- 3. Buybox Owner Extraction (Modern tabular design first) ---
-    let amazonBuyboxOwner = buyBoxContext.find('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[tabular-attribute-name="Verzonden en verkocht door"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[tabular-attribute-name="Dispatched from and sold by"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
-                            buyBoxContext.find('#sellerProfileTriggerId').first().text().trim() ||
-                            buyBoxContext.find('#merchant-info a').first().text().trim() ||
-                            $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
+    let amazonBuyboxOwner = $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
                             $('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
                             $('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
                             $('div[tabular-attribute-name="Verzonden en verkocht door"] .tabular-buybox-text').first().text().trim() ||
@@ -302,12 +288,11 @@ app.post("/api/audit/amazon", async (req, res) => {
                             $('#merchant-info a').first().text().trim();
 
     if (!amazonBuyboxOwner) {
-      let mInfo = (buyBoxContext.find('#merchant-info').first().text() || $('#merchant-info').first().text()).toLowerCase();
+      let mInfo = ($('#merchant-info').first().text() || '').toLowerCase();
       if (mInfo.includes('sold by amazon') || mInfo.includes('verkauf durch amazon') || mInfo.includes('dispatched from and sold by amazon') || mInfo.includes('expédié et vendu par amazon') || mInfo.includes('amazon')) {
         amazonBuyboxOwner = "Amazon";
       } else {
-        amazonBuyboxOwner = buyBoxContext.find('.offer-display-feature-text-message').first().text().trim() ||
-                            $('#desktop_buybox .offer-display-feature-text-message').first().text().trim() || 
+        amazonBuyboxOwner = $('#desktop_buybox .offer-display-feature-text-message').first().text().trim() || 
                             $('#rightCol .offer-display-feature-text-message').first().text().trim() ||
                             $('#merchant-info').first().text().trim();
       }
@@ -771,7 +756,7 @@ async function goToProduct(page: any, searchTerm: string) {
     if (!isAkamaiChallenge(content, title)) return true;
     // Last resort: reload
     console.log('[BOL] Trying full reload...');
-    await page.reload({ waitUntil: 'networkidle', timeout: 10_000 }).catch(() => null);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null);
     await page.waitForTimeout(1_000);
     
     content = await page.content().catch(() => '');
@@ -801,7 +786,7 @@ async function goToProduct(page: any, searchTerm: string) {
           console.log(`[BOL] Clicking consent button: ${sel}`);
           // Awaiting navigation because clicking consent often triggers a page reload on Bol.com
           await Promise.all([
-            page.waitForNavigation({ waitUntil: 'networkidle', timeout: 5_000 }).catch(() => null),
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null),
             btn.click().catch(() => null)
           ]);
           clicked = true;
@@ -833,7 +818,7 @@ async function goToProduct(page: any, searchTerm: string) {
         }).catch(() => false);
         if (jsClicked) {
           console.log(`[BOL] Clicked consent via JS fallback`);
-          await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 5_000 }).catch(() => null);
+          await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null);
         }
       }
       
@@ -850,7 +835,7 @@ async function goToProduct(page: any, searchTerm: string) {
   // Go directly to the search URL (proven to be stealthier on Railway)
   console.log('[BOL] Step 2: Navigating directly to search URL...');
   try {
-    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 30_000 });
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   } catch (_) {}
   await handleCookieConsent();
   // Step 6: Wait intelligently for search results or product redirect
@@ -887,7 +872,7 @@ async function goToProduct(page: any, searchTerm: string) {
     console.warn('[BOL] IP blocked — pausing then retrying...');
     await page.waitForTimeout(5_000);
     await page.setViewportSize({ width: Math.floor(Math.random() * (420 - 375 + 1)) + 375, height: 844 });
-    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20_000 }).catch(() => null);
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
     await page.waitForTimeout(1_000);
     content = await page.content().catch(() => '');
     contentLower = content.toLowerCase();
@@ -953,7 +938,7 @@ async function goToProduct(page: any, searchTerm: string) {
     if (productHref) {
       console.log(`[BOL] Navigating to product: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
-      await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 20_000 }).catch(() => null);
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
       await page.waitForTimeout(1_000);
     } else {
       const debugTitle = await page.title().catch(() => '');
@@ -976,8 +961,7 @@ async function extractCatalogue(page: any) {
     throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
   }
 
-  await page.waitForLoadState('load', { timeout: 45_000 }).catch(() => null);
-  await page.waitForLoadState('networkidle', { timeout: 45_000 }).catch(() => null);
+  await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => null);
   await page.waitForTimeout(1_200);
 
   await page.mouse.wheel(0, 400);
