@@ -112,16 +112,16 @@ app.post("/api/audit/amazon", async (req, res) => {
       throw new Error(`Browser launch failed. Error: ${err.message}`);
     });
 
-    const amazonLocalizationMap: Record<string, { locale: string; timezoneId: string; city: string; zip: string; currency: string; deliverTo: string[] }> = {
-      'amazon.co.uk': { locale: 'en-GB', timezoneId: 'Europe/London', city: 'LND', zip: 'SW1A 1AA', currency: 'GBP', deliverTo: ['Deliver to', 'Livre à'] },
-      'amazon.de': { locale: 'de-DE', timezoneId: 'Europe/Berlin', city: 'BER', zip: '10117', currency: 'EUR', deliverTo: ['Lieferung nach', 'Liefern an', 'Deliver to'] },
-      'amazon.fr': { locale: 'fr-FR', timezoneId: 'Europe/Paris', city: 'PAR', zip: '75001', currency: 'EUR', deliverTo: ['Livrer à', 'Livraison à', 'Deliver to'] },
-      'amazon.it': { locale: 'it-IT', timezoneId: 'Europe/Rome', city: 'ROM', zip: '00118', currency: 'EUR', deliverTo: ['Invia a', 'Consegna a', 'Deliver to'] },
-      'amazon.es': { locale: 'es-ES', timezoneId: 'Europe/Madrid', city: 'MAD', zip: '28001', currency: 'EUR', deliverTo: ['Enviar a', 'Entrega en', 'Deliver to'] },
-      'amazon.nl': { locale: 'nl-NL', timezoneId: 'Europe/Amsterdam', city: 'AMS', zip: '1011 AB', currency: 'EUR', deliverTo: ['Bezorgen in', 'Deliver to'] },
-      'amazon.pl': { locale: 'pl-PL', timezoneId: 'Europe/Warsaw', city: 'WAW', zip: '00-001', currency: 'PLN', deliverTo: ['Dostawa do', 'Wyślij do', 'Deliver to'] },
-      'amazon.se': { locale: 'sv-SE', timezoneId: 'Europe/Stockholm', city: 'STO', zip: '111 20', currency: 'SEK', deliverTo: ['Skicka till', 'Leverera till', 'Deliver to'] },
-      'amazon.com.be': { locale: 'nl-BE', timezoneId: 'Europe/Brussels', city: 'BRU', zip: '1000', currency: 'EUR', deliverTo: ['Bezorgen in', 'Livrer à', 'Deliver to'] },
+    const amazonLocalizationMap: Record<string, { locale: string; timezoneId: string; city: string; zip: string; currency: string; countryCode?: string; deliverTo: string[] }> = {
+      'amazon.co.uk': { locale: 'en-GB', timezoneId: 'Europe/London', city: 'LND', zip: 'SW1A 1AA', currency: 'GBP', countryCode: 'GB', deliverTo: ['Deliver to', 'Livre à'] },
+      'amazon.de': { locale: 'de-DE', timezoneId: 'Europe/Berlin', city: 'BER', zip: '10117', currency: 'EUR', countryCode: 'DE', deliverTo: ['Lieferung nach', 'Liefern an', 'Deliver to'] },
+      'amazon.fr': { locale: 'fr-FR', timezoneId: 'Europe/Paris', city: 'PAR', zip: '75001', currency: 'EUR', countryCode: 'FR', deliverTo: ['Livrer à', 'Livraison à', 'Deliver to'] },
+      'amazon.it': { locale: 'it-IT', timezoneId: 'Europe/Rome', city: 'ROM', zip: '00118', currency: 'EUR', countryCode: 'IT', deliverTo: ['Invia a', 'Consegna a', 'Deliver to'] },
+      'amazon.es': { locale: 'es-ES', timezoneId: 'Europe/Madrid', city: 'MAD', zip: '28001', currency: 'EUR', countryCode: 'ES', deliverTo: ['Enviar a', 'Entrega en', 'Deliver to'] },
+      'amazon.nl': { locale: 'nl-NL', timezoneId: 'Europe/Amsterdam', city: 'AMS', zip: '1011 AB', currency: 'EUR', countryCode: 'NL', deliverTo: ['Bezorgen in', 'Deliver to'] },
+      'amazon.pl': { locale: 'pl-PL', timezoneId: 'Europe/Warsaw', city: 'WAW', zip: '00-001', currency: 'PLN', countryCode: 'PL', deliverTo: ['Dostawa do', 'Wyślij do', 'Deliver to'] },
+      'amazon.se': { locale: 'sv-SE', timezoneId: 'Europe/Stockholm', city: 'STO', zip: '111 20', currency: 'SEK', countryCode: 'SE', deliverTo: ['Skicka till', 'Leverera till', 'Deliver to'] },
+      'amazon.com.be': { locale: 'nl-BE', timezoneId: 'Europe/Brussels', city: 'BRU', zip: '1000', currency: 'EUR', countryCode: 'BE', deliverTo: ['Bezorgen in', 'Livrer à', 'Deliver to'] },
     };
 
     const locConfig = amazonLocalizationMap[domain] || { locale: 'en-US', timezoneId: 'America/New_York', city: 'NYC', zip: '10001', currency: 'USD', deliverTo: ['Deliver to'] };
@@ -182,13 +182,32 @@ app.post("/api/audit/amazon", async (req, res) => {
 
         if (isRegionalLocked) {
           console.log(`UI Regional Unlock Fallback: Injecting ${locConfig.zip} for ${domain}`);
-          // Use more robust location button selector
+          // Wait for first click option to be visible
           const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { visible: true, timeout: 15000 }).catch(() => null);
           if (locBtn) {
             await locBtn.click({ force: true });
-            
-            // Wait for popover to appear - use broader selector for input
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(2000);
+
+            // 1. Check if Country Selection Dropdown is shown instead of Zip update input (e.g. from international proxy IP)
+            const countryListSelector = '#GLUXCountryList';
+            const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
+            if (countryListVisible && locConfig.countryCode) {
+              console.log(`Country list dropdown detected inside Amazon location popover. Selecting: ${locConfig.countryCode}`);
+              await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
+              await page.waitForTimeout(1000);
+
+              // Click "Go" or "Apply" button for country selection
+              const goBtnSelector = 'input[aria-labelledby="GLUXCountryList-announce"], button[name="glowDoneButton"], #GLUXCountryList-announce + input, .a-popover-footer input';
+              await page.click(goBtnSelector, { force: true }).catch(() => null);
+              await page.waitForTimeout(3000);
+
+              // Reload or re-click to get zip code inputs visible!
+              console.log('Re-clicking global location slot after selecting country...');
+              await page.click('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { force: true }).catch(() => null);
+              await page.waitForTimeout(2000);
+            }
+
+            // 2. Now handle the standard zip/postcode input field!
             const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="code"], input[name="zipCode"]';
             const inputVisible = await page.waitForSelector(zipInputSelector, { state: 'visible', timeout: 15000 }).catch(() => null);
             
@@ -849,9 +868,9 @@ function getScoreGrade(score: number): string {
 
 // --- Bol.com Helpers ---
 
-// ── BOL STRATEGY 2: Gemini URL Context ────────────────────────────────────────
-// Gemini's urlContext tool fetches the given URL from Google's own servers.
-// Google's IPs are not flagged by Akamai, so this bypasses the WAF entirely.
+// ── BOL STRATEGY 2: Gemini Google Search Grounding ───────────────────────────
+// Gemini's googleSearch tool performs web search queries via Google's engine.
+// Since Google's crawl engines are not blocked by Akamai, this completely bypasses WAF limitations.
 // Requires GEMINI_API_KEY env var (already used by the app).
 async function tryBolViaGemini(ean: string): Promise<any | null> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -869,30 +888,29 @@ async function tryBolViaGemini(ean: string): Promise<any | null> {
         }
       }
     });
-    const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(ean)}`;
 
-    console.log('[BOL GEMINI] Fetching Bol.com via Gemini URL Context...');
+    console.log('[BOL GEMINI] Generating content with googleSearch grounding for EAN:', ean);
 
-    const prompt = `Fetch the Bol.com search page at this URL and find the first product result for EAN "${ean}".
-Then fetch that product page.
-Extract and return ONLY a JSON object (no markdown, no explanation) with these exact fields:
+    const prompt = `Perform a google search for "bol.com product ${ean}" or search for "${ean}" directly on bol.com.
+Locate the official product page on bol.com.
+Extract and return a single, exact JSON object with the following schema:
 {
-  "title": "full product title",
-  "price": "price as a number string e.g. 29.99",
-  "shipping": "delivery message text e.g. Morgen in huis or Uiterlijk donderdag 22 mei",
-  "description": "product description text, first 500 chars",
-  "images": ["array", "of", "image", "urls"],
-  "bullets": ["array", "of", "product", "feature", "bullet", "points"],
-  "productUrl": "the full product page URL",
-  "liveVariations": "variant options text if any, else empty string"
+  "title": "exact full product title on bol.com",
+  "price": "correct numerical price string e.g. 14.99",
+  "shipping": "correct shipping time/delivery message e.g. 'Morgen in huis' or 'Uiterlijk donderdag 22 mei'",
+  "description": "product description details, first 500 characters",
+  "images": ["image url 1", "image url 2"],
+  "bullets": ["feature point 1", "feature point 2"],
+  "productUrl": "the direct final product link on bol.com",
+  "liveVariations": "variation options if any, else empty string"
 }
-Return ONLY the JSON object. No other text.`;
+Make sure all details (pricing, title, shipping) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No conversational helper text, no markdown other than \`\`\`json.`;
 
     const response = await genai.models.generateContent({
       model: 'gemini-3.5-flash',
       contents: prompt,
       config: {
-        tools: [{ urlContext: {} }],
+        tools: [{ googleSearch: {} }],
         temperature: 0.1,
       }
     });
@@ -905,7 +923,7 @@ Return ONLY the JSON object. No other text.`;
     try {
       const parsed = JSON.parse(jsonText);
       if (parsed && parsed.title) {
-        parsed._source = 'gemini-url-context';
+        parsed._source = 'gemini-google-search';
         return parsed;
       }
     } catch (parseErr) {
@@ -914,7 +932,7 @@ Return ONLY the JSON object. No other text.`;
         try {
           const extracted = JSON.parse(jsonMatch[0]);
           if (extracted && extracted.title) {
-            extracted._source = 'gemini-url-context';
+            extracted._source = 'gemini-google-search';
             return extracted;
           }
         } catch (_) {}
@@ -1492,10 +1510,8 @@ app.post("/api/audit/bol", async (req, res) => {
     let data: any = null;
     let dataSource = 'browser';
 
-    // ── Strategy 1: Gemini URL Context (skipping broken JSON API) ──────────────
-    // Note: tryBolJsonApi() was removed because it requests HTML search page
-    // with JSON headers, wastes a request, and triggers WAF. Skipping it.
-    console.log('[BOL] Trying Strategy 1: Gemini URL Context...');
+    // ── Strategy 1: Gemini Google Search Grounding ─────────────────────────
+    console.log('[BOL] Trying Strategy 1: Gemini Google Search Grounding...');
     data = await tryBolViaGemini(ean);
     if (data) {
       console.log('[BOL] Strategy 1 succeeded via Gemini.');
