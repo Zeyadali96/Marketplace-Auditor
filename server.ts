@@ -10,6 +10,7 @@ import axios from 'axios';
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
 import stringSimilarity from 'string-similarity';
+import { GoogleGenAI } from '@google/genai';
 
 chromiumExtra.use(stealth());
 
@@ -709,83 +710,208 @@ function getScoreGrade(score: number): string {
 }
 
 // --- Bol.com Helpers ---
+
+// ── BOL STRATEGY 1: Direct JSON API (no browser needed) ──────────────────────
+// Bol.com's internal product endpoints return JSON for known EANs/product IDs.
+// These endpoints are used by Bol's own mobile app and are less WAF-protected
+// than the storefront HTML pages.
+async function tryBolJsonApi(ean: string): Promise<any | null> {
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'nl-NL,nl;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Referer': 'https://www.bol.com/nl/nl/',
+    'Origin': 'https://www.bol.com',
+    'sec-fetch-site': 'same-origin',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-dest': 'empty',
+    'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'DNT': '1'
+  };
+
+  try {
+    const response = await axios.get(
+      `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(ean)}`,
+      {
+        headers: {
+          ...headers,
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        timeout: 10_000,
+        validateStatus: (s) => s < 500
+      }
+    );
+
+    if (response.status === 200 && response.headers['content-type']?.includes('json')) {
+      const data = response.data;
+      const products = data?.searchResult?.products || data?.products || data?.items || [];
+      if (products.length > 0) {
+        const p = products[0];
+        return {
+          title: p.title || p.shortDescription || '',
+          price: p.offerData?.offers?.[0]?.price?.toString() || p.price?.toString() || 'N/A',
+          shipping: p.offerData?.offers?.[0]?.deliveryInfo || p.deliveryInfo || p.offerData?.offers?.[0]?.deliveryInfoHeading || 'N/A',
+          description: p.longDescription || p.description || '',
+          images: (p.images || []).map((i: any) => i.url || i).filter(Boolean),
+          bullets: [],
+          liveVariations: '',
+          _source: 'json-api'
+        };
+      }
+    }
+  } catch (e) {
+    console.log('[BOL JSON API] Endpoint 1 failed:', (e as Error).message);
+  }
+
+  return null;
+}
+
+// ── BOL STRATEGY 2: Gemini URL Context ────────────────────────────────────────
+// Gemini's urlContext tool fetches the given URL from Google's own servers.
+// Google's IPs are not flagged by Akamai, so this bypasses the WAF entirely.
+// Requires GEMINI_API_KEY env var (already used by the app).
+async function tryBolViaGemini(ean: string): Promise<any | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.log('[BOL GEMINI] No GEMINI_API_KEY found, skipping.');
+    return null;
+  }
+
+  try {
+    const genai = new GoogleGenAI({ apiKey });
+    const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(ean)}`;
+
+    console.log('[BOL GEMINI] Fetching Bol.com via Gemini URL Context...');
+
+    const prompt = `Fetch the Bol.com search page at this URL and find the first product result for EAN "${ean}".
+Then fetch that product page.
+Extract and return ONLY a JSON object (no markdown, no explanation) with these exact fields:
+{
+  "title": "full product title",
+  "price": "price as a number string e.g. 29.99",
+  "shipping": "delivery message text e.g. Morgen in huis or Uiterlijk donderdag 22 mei",
+  "description": "product description text, first 500 chars",
+  "images": ["array", "of", "image", "urls"],
+  "bullets": ["array", "of", "product", "feature", "bullet", "points"],
+  "productUrl": "the full product page URL",
+  "liveVariations": "variant options text if any, else empty string"
+}
+Return ONLY the JSON object. No other text.`;
+
+    const response = await genai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: prompt,
+      config: {
+        tools: [{ urlContext: {} }],
+        temperature: 0.1,
+      }
+    });
+
+    const rawText = response.text?.trim() || '';
+    console.log('[BOL GEMINI] Raw response length:', rawText.length);
+
+    const jsonText = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+
+    try {
+      const parsed = JSON.parse(jsonText);
+      if (parsed && parsed.title) {
+        parsed._source = 'gemini-url-context';
+        return parsed;
+      }
+    } catch (parseErr) {
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const extracted = JSON.parse(jsonMatch[0]);
+          if (extracted && extracted.title) {
+            extracted._source = 'gemini-url-context';
+            return extracted;
+          }
+        } catch (_) {}
+      }
+      console.log('[BOL GEMINI] JSON parse failed:', parseErr);
+    }
+  } catch (e: any) {
+    console.log('[BOL GEMINI] Strategy failed:', e.message);
+  }
+
+  return null;
+}
+
+// ── BOL STRATEGY 3: Playwright stealth browser (hardened backup) ─────────────
 async function goToProduct(page: any, searchTerm: string) {
   const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(searchTerm)}`;
-  console.log(`[BOL] Searching for: ${searchTerm}`);
-  // Step 1: Pre-inject consent cookies to bypass cookie banners entirely
-  // Disabled as injecting cookies prematurely might trigger Akamai WAF on Railway
-  try {
-    // await page.context().addCookies([ ... ]);
-  } catch (e) {
-    console.log('[BOL] Cookie pre-injection warning:', (e as Error).message);
-  }
-  // Helper: detect Akamai WAF challenge page
+  console.log(`[BOL BROWSER] Searching for: ${searchTerm}`);
+
   const isAkamaiChallenge = (c: string, t: string) => {
     const isBolTitle = t.toLowerCase() === 'bol' || t.toLowerCase() === 'bol.com';
-    const cLower = c.toLowerCase();
-    
-    // Explicitly prevent Cookie Consent or actual storefronts from being flagged as Akamai
-    if (c.includes('js-accept-all-cookies') || c.includes('consent-assign-all') || c.includes('search-input') || c.includes('lang="nl-NL"')) {
-      return false;
-    }
-    // Identify explicit blocks or the generic Pragma no-cache interstitial
-    return c.includes('sec-if-cpt-container') ||
-           c.includes('Toegang tot deze pagina is geweigerd') ||
-           c.includes('Access Denied') ||
-           c.includes('Pardon Our Interruption') ||
-           (isBolTitle && c.includes('<meta name="Pragma" content="no-cache">')) ||
-           (isBolTitle && !c.includes('lang="nl-NL"'));
+    if (
+      c.includes('js-accept-all-cookies') ||
+      c.includes('consent-assign-all') ||
+      c.includes('search-input') ||
+      c.includes('lang="nl-NL"')
+    ) return false;
+    return (
+      c.includes('sec-if-cpt-container') ||
+      c.includes('Toegang tot deze pagina is geweigerd') ||
+      c.includes('Access Denied') ||
+      c.includes('Pardon Our Interruption') ||
+      (isBolTitle && c.includes('<meta name="Pragma" content="no-cache">')) ||
+      (isBolTitle && !c.includes('lang="nl-NL"'))
+    );
   };
-  // Helper: wait for Akamai challenge to auto-resolve (Fail Fast to prevent Railway Timeout)
+
+  const isHardBlocked = (c: string) => {
+    const cLower = c.toLowerCase();
+    return (
+      (cLower.includes('ip adres') && cLower.includes('geblokkeerd')) ||
+      cLower.includes('rustig aan speed racer') ||
+      cLower.includes('human verification')
+    );
+  };
+
   const waitForAkamai = async () => {
     let content = await page.content().catch(() => '');
     let title = await page.title().catch(() => '');
-    
-    const cLower = content.toLowerCase();
-    if ((cLower.includes('ip adres') && cLower.includes('geblokkeerd')) || cLower.includes('rustig aan speed racer') || cLower.includes('human verification')) {
-        throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
+    if (isHardBlocked(content)) {
+      throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
     }
-
     if (!isAkamaiChallenge(content, title)) return true;
-    console.log('[BOL] Akamai WAF challenge detected — waiting for quick auto-resolve...');
-    
-    // Jiggle the mouse to trigger Akamai behavioral telemetry
+    console.log('[BOL BROWSER] Akamai WAF challenge detected — waiting for auto-resolve...');
     try {
-      await page.mouse.move(100, 100);
-      await page.waitForTimeout(200);
-      await page.mouse.move(300, 200);
-      await page.mouse.wheel(0, 150);
+      await page.mouse.move(Math.random() * 400 + 100, Math.random() * 300 + 100);
+      await page.waitForTimeout(300);
+      await page.mouse.move(Math.random() * 600 + 200, Math.random() * 400 + 150);
+      await page.mouse.wheel(0, Math.random() * 200 + 100);
+      await page.waitForTimeout(300);
     } catch (_) {}
-    
     try {
       await page.waitForFunction(() => {
         const t = document.title.toLowerCase();
-        // If title is no longer generic bol, it might have resolved
         if (t !== 'bol' && t !== 'bol.com' && t !== '') return true;
-        // Or if it injected the real body (Bol.com storefronts are large and have lang)
         if (document.documentElement.outerHTML.includes('lang="nl-NL"')) return true;
         if (document.body && document.body.innerHTML.length > 20000) return true;
         return false;
-      }, { timeout: 4_000, polling: 500 });
-    } catch (e) {
-      console.log('[BOL] Akamai auto-resolve wait finished.');
+      }, { timeout: 6_000, polling: 500 });
+    } catch (_) {
+      console.log('[BOL BROWSER] Akamai wait finished.');
     }
     content = await page.content().catch(() => '');
     title = await page.title().catch(() => '');
-    
-    const finalCLower = content.toLowerCase();
-    if ((finalCLower.includes('ip adres') && finalCLower.includes('geblokkeerd')) || finalCLower.includes('rustig aan speed racer') || finalCLower.includes('human verification')) {
-        throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
+    if (isHardBlocked(content)) {
+      throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
     }
-
     if (isAkamaiChallenge(content, title)) {
-      // Throw explicitly so we fail fast and return 500 instead of hanging and hitting Railway's 100s timeout
       const snippet = content.replace(/\s+/g, ' ').substring(0, 150);
       throw new Error(`WAF_BLOCKED: Stuck on Akamai challenge. Snippet: ${snippet}`);
     }
     return true;
   };
-  // Helper: robustly handle cookie consent banner
+
   const handleCookieConsent = async () => {
     try {
       const consentSelectors = [
@@ -799,8 +925,7 @@ async function goToProduct(page: any, searchTerm: string) {
       for (const sel of consentSelectors) {
         const btn = await page.$(sel).catch(() => null);
         if (btn && await btn.isVisible().catch(() => false)) {
-          console.log(`[BOL] Clicking consent button: ${sel}`);
-          // Awaiting navigation because clicking consent often triggers a page reload on Bol.com
+          console.log(`[BOL BROWSER] Clicking consent: ${sel}`);
           await Promise.all([
             page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null),
             btn.click().catch(() => null)
@@ -810,91 +935,103 @@ async function goToProduct(page: any, searchTerm: string) {
         }
       }
       if (!clicked) {
-        // JS fallback
         const jsClicked = await page.evaluate(() => {
           const btns = [
             document.querySelector('button#js-accept-all-cookies'),
             document.querySelector('[data-test="consent-assign-all"]'),
             document.querySelector('button[data-test="consent-modal-accept"]')
           ];
-          for (const b of btns) {
-            if (b) { (b as HTMLElement).click(); return true; }
-          }
-          
+          for (const b of btns) { if (b) { (b as HTMLElement).click(); return true; } }
           const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
           const target = buttons.find(b => {
             const t = (b.textContent || '').toLowerCase();
             return t.includes('akkoord') || t.includes('accepteer') || t.includes('accept') || t.includes('alle cookies');
           });
-          if (target) {
-            (target as HTMLElement).click();
-            return true;
-          }
+          if (target) { (target as HTMLElement).click(); return true; }
           return false;
         }).catch(() => false);
         if (jsClicked) {
-          console.log(`[BOL] Clicked consent via JS fallback`);
           await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null);
         }
       }
-      
-      // Force overlay removal if it still exists to prevent pointer-events blocks
       await page.evaluate(() => {
         const overlay = document.querySelector('.consent-modal, #consent-modal, .cookie-consent');
         if (overlay) (overlay as HTMLElement).style.display = 'none';
         document.body.style.overflow = 'auto';
       }).catch(() => null);
-      
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(800);
     } catch (_) {}
   };
-  // Go directly to the search URL (proven to be stealthier on Railway)
-  console.log('[BOL] Step 2: Navigating directly to search URL...');
+
+  console.log('[BOL BROWSER] Step 1: Visiting homepage to warm Akamai session...');
   try {
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-  } catch (_) {}
+    await page.goto('https://www.bol.com/nl/nl/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 20_000
+    });
+    await page.waitForTimeout(Math.random() * 1200 + 600);
+    await page.mouse.move(Math.random() * 400 + 200, Math.random() * 200 + 100);
+    await page.mouse.wheel(0, Math.random() * 150 + 50);
+    await page.waitForTimeout(Math.random() * 800 + 300);
+  } catch (e) {
+    console.log('[BOL BROWSER] Homepage warmup failed (non-fatal):', (e as Error).message);
+  }
+
   await handleCookieConsent();
-  // Step 6: Wait intelligently for search results or product redirect
-  await page.waitForTimeout(1_000);
+
+  {
+    const hpContent = await page.content().catch(() => '');
+    const hpTitle = await page.title().catch(() => '');
+    if (isHardBlocked(hpContent)) {
+      throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
+    }
+    if (isAkamaiChallenge(hpContent, hpTitle)) {
+      await waitForAkamai();
+    }
+  }
+
+  console.log('[BOL BROWSER] Step 2: Navigating to search URL...');
+  try {
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+  } catch (_) {}
+
+  await handleCookieConsent();
+  await page.waitForTimeout(1_200);
+
   try {
     await page.waitForFunction(() => {
-      // Actively poll until the search API injects the grid OR redirects to a product page
-      return window.location.href.includes('/p/') || 
-             document.querySelector('[data-test="product-item"]') ||
-             document.querySelector('.product-item--row') ||
-             document.querySelector('.ui-kit-card') ||
-             document.body.innerText.toLowerCase().includes('0 resultaten') ||
-             document.body.innerText.toLowerCase().includes('geen resultaten');
-    }, { timeout: 8_000, polling: 500 });
-  } catch (e) {
-    console.log('[BOL] Timeout waiting for search results or redirect to settle.');
+      return (
+        window.location.href.includes('/p/') ||
+        !!document.querySelector('[data-test="product-item"]') ||
+        !!document.querySelector('.product-item--row') ||
+        !!document.querySelector('.ui-kit-card') ||
+        document.body.innerText.toLowerCase().includes('0 resultaten') ||
+        document.body.innerText.toLowerCase().includes('geen resultaten')
+      );
+    }, { timeout: 10_000, polling: 500 });
+  } catch (_) {
+    console.log('[BOL BROWSER] Timeout waiting for search results.');
   }
+
   await waitForAkamai();
-  
-  // Extra check: if we navigated directly or after search, we might hit a secondary consent banner
-  let currentTitle = await page.title().catch(() => '');
-  if (currentTitle.toLowerCase() === 'bol' || currentTitle.toLowerCase() === 'bol.com') {
-    console.log('[BOL] Title is still generic, handling potential secondary consent banner...');
+
+  const titleCheck = await page.title().catch(() => '');
+  if (titleCheck.toLowerCase() === 'bol' || titleCheck.toLowerCase() === 'bol.com') {
     await handleCookieConsent();
     await waitForAkamai();
   }
-  let content = await page.content().catch(() => '');
-  let title = await page.title().catch(() => '');
-  let contentLower = content.toLowerCase();
-  
-  // Step 7: Check for IP block (only REAL IP blocks)
-  if ((contentLower.includes('ip adres') && contentLower.includes('geblokkeerd')) || contentLower.includes('rustig aan speed racer') ||
-      contentLower.includes('human verification')) {
+
+  const content = await page.content().catch(() => '');
+
+  if (isHardBlocked(content)) {
     throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
   }
 
-  // Step 8: Check for zero results
   if (content.includes('geen resultaten gevonden') || content.includes('0 resultaten')) {
     throw new Error(`NO_RESULTS: Bol.com found no results for "${searchTerm}". Please verify the EAN/Search term.`);
   }
-  // Step 9: If not already on a product page, find and click the first product
+
   if (!page.url().includes('/p/')) {
-    // Wait for search results to appear
     const resultSelectors = [
       '[data-test="product-item"]',
       '.product-item--row',
@@ -909,17 +1046,16 @@ async function goToProduct(page: any, searchTerm: string) {
       try {
         await page.waitForSelector(sel, { state: 'attached', timeout: 5_000 });
         foundResults = true;
-        console.log(`[BOL] Search results found: ${sel}`);
+        console.log(`[BOL BROWSER] Search results found: ${sel}`);
         break;
       } catch (_) {}
     }
     if (!foundResults) {
-      console.log('[BOL] Warning: Search results selectors not found, trying to find links directly...');
       await page.waitForTimeout(1_000);
       await page.mouse.wheel(0, 500);
       await page.waitForTimeout(1_000);
     }
-    // Find the first product link
+
     const productHref = await page.evaluate(() => {
       const titleLinkSelectors = [
         'a[data-test="product-title"]',
@@ -927,11 +1063,10 @@ async function goToProduct(page: any, searchTerm: string) {
         'a.product-item__title',
         '[data-test="product-item"] a[href*="/p/"]',
         '.product-item--row a[href*="/p/"]',
-        'a[href*="/p/"]' // fallback to any product link
+        'a[href*="/p/"]'
       ];
       for (const sel of titleLinkSelectors) {
         const el = document.querySelector(sel) as HTMLAnchorElement;
-        // Ignore generic or non-product links
         if (el && el.href && el.href.includes('/p/') && !el.href.includes('/m/')) return el.href;
       }
       const allLinks = Array.from(document.querySelectorAll('a'));
@@ -942,9 +1077,11 @@ async function goToProduct(page: any, searchTerm: string) {
       });
       return productLink ? productLink.href : null;
     }).catch(() => null);
+
     if (productHref) {
-      console.log(`[BOL] Navigating to product: ${productHref}`);
+      console.log(`[BOL BROWSER] Navigating to product: ${productHref}`);
       const fullUrl = productHref.startsWith('http') ? productHref : 'https://www.bol.com' + productHref;
+      await page.waitForTimeout(Math.random() * 600 + 300);
       await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => null);
       await page.waitForTimeout(1_000);
     } else {
@@ -952,8 +1089,6 @@ async function goToProduct(page: any, searchTerm: string) {
       const debugUrl = page.url();
       const debugContent = await page.content().catch(() => '');
       const snippet = debugContent.replace(/\s+/g, ' ').substring(0, 250);
-      console.error(`[BOL] FAILED to find product link.`);
-      console.error(`[BOL] Title: "${debugTitle}", URL: "${debugUrl}"`);
       throw new Error(`No product link found on Bol.com. Title: "${debugTitle}", Snippet: ${snippet}`);
     }
   }
@@ -1268,89 +1403,147 @@ app.post("/api/audit/bol", async (req, res) => {
     const { ean, masterData } = req.body;
     if (!ean) throw new Error('Missing "ean" in request body');
 
-    // Railway deployment fix: keep headless as boolean false to bypass Playwright's default headless flag,
-    // and explicitly pass '--headless=new' to Chromium to use the new stealthier headless mode that doesn't need X11.
-    // (Minor update to trigger a deployment)
-    const launchOpts: any = {
-      headless: false,
-      args: [
-        '--headless=new',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--window-size=1920,1080',
-        '--disable-features=IsolateOrigins,site-per-process',
-        // Mask automation signals that Akamai probes for
-        '--disable-infobars',
-        '--disable-extensions',
-        '--disable-default-apps',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--password-store=basic',
-        '--use-mock-keychain',
-        '--incognito'
-      ]
-    };
-    
-    const proxyServer = process.env.PROXY_SERVER;
-    if (proxyServer) {
-      launchOpts.proxy = {
-        server: proxyServer,
-        username: process.env.PROXY_USERNAME,
-        password: process.env.PROXY_PASSWORD
-      };
+    let data: any = null;
+    let dataSource = 'browser';
+
+    // ── Strategy 1: Direct JSON API (fastest, no browser) ────────────────────
+    console.log('[BOL] Trying Strategy 1: Direct JSON API...');
+    data = await tryBolJsonApi(ean);
+    if (data) {
+      console.log('[BOL] Strategy 1 succeeded.');
+      dataSource = 'json-api';
     }
-    
-    // Launch stealth-enabled browser
-    browser = await chromiumExtra.launch(launchOpts);
-    
-    // Create context with explicitly defined modern User-Agent and headers
-    // This is CRITICAL because without it, Playwright sends "HeadlessChrome" in the raw HTTP headers,
-    // which Akamai detects instantly, even if the JS navigator object is spoofed by stealth.
-    const context = await browser.newContext({
-      // Updated to Chrome 136 (latest stable 2025/2026).
-      // The UA, sec-ch-ua header, and TLS fingerprint must all agree on the same
-      // version — Akamai cross-checks all three to detect spoofing.
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-      viewport: { width: Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366, height: Math.floor(Math.random() * (1080 - 768 + 1)) + 768 },
-      locale: 'nl-NL',
-      extraHTTPHeaders: {
-        'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-        'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'upgrade-insecure-requests': '1'
+
+    // ── Strategy 2: Gemini URL Context ────────────────────────────────────────
+    if (!data) {
+      console.log('[BOL] Trying Strategy 2: Gemini URL Context...');
+      data = await tryBolViaGemini(ean);
+      if (data) {
+        console.log('[BOL] Strategy 2 succeeded via Gemini.');
+        dataSource = 'gemini';
       }
-    });
-    // NOTE: Removed the manual context.addInitScript navigator.webdriver hack here. 
-    // It conflicts with puppeteer-extra-plugin-stealth and actually triggers Akamai's anti-bot system.
-    const page = await context.newPage();
-    
-    await goToProduct(page, ean);
-    const data = await extractCatalogue(page);
-    
-    const bolShippingDays = calculateBolShippingDays(data.shipping);
+    }
+
+    // ── Strategy 3: Playwright stealth browser (hardened) ─────────────────────
+    if (!data) {
+      console.log('[BOL] Trying Strategy 3: Playwright stealth browser...');
+
+      const launchOpts: any = {
+        headless: false,
+        args: [
+          '--headless=new',
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--window-size=1920,1080',
+          '--disable-features=IsolateOrigins,site-per-process',
+          '--disable-infobars',
+          '--disable-extensions',
+          '--disable-default-apps',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--password-store=basic',
+          '--use-mock-keychain',
+          '--incognito'
+        ]
+      };
+
+      const proxyServer = process.env.PROXY_SERVER;
+      if (proxyServer) {
+        launchOpts.proxy = {
+          server: proxyServer,
+          username: process.env.PROXY_USERNAME,
+          password: process.env.PROXY_PASSWORD
+        };
+      }
+
+      browser = await chromiumExtra.launch(launchOpts);
+
+      const screenWidth = Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366;
+      const screenHeight = Math.floor(Math.random() * (1080 - 768 + 1)) + 768;
+
+      const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        viewport: { width: screenWidth, height: screenHeight },
+        screen: { width: screenWidth, height: screenHeight },
+        locale: 'nl-NL',
+        timezoneId: 'Europe/Amsterdam',
+        colorScheme: 'light',
+        extraHTTPHeaders: {
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept-Encoding': 'gzip, deflate, br, zstd',
+          'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Windows"',
+          'sec-ch-ua-platform-version': '"15.0.0"',
+          'sec-ch-ua-full-version-list': '"Chromium";v="136.0.7103.114", "Google Chrome";v="136.0.7103.114", "Not-A.Brand";v="99.0.0.0"',
+          'upgrade-insecure-requests': '1',
+          'sec-fetch-site': 'none',
+          'sec-fetch-mode': 'navigate',
+          'sec-fetch-user': '?1',
+          'sec-fetch-dest': 'document',
+          'cache-control': 'max-age=0',
+          'DNT': '1'
+        }
+      });
+
+      // Pre-inject OneTrust consent cookies to skip cookie consent redirect
+      await context.addCookies([
+        { name: 'consent_cookie', value: '1', domain: '.bol.com', path: '/', sameSite: 'Lax' },
+        { name: 'accept_all_cookies', value: 'true', domain: '.bol.com', path: '/', sameSite: 'Lax' },
+        {
+          name: 'OptanonAlertBoxClosed',
+          value: new Date().toISOString(),
+          domain: '.bol.com',
+          path: '/',
+          sameSite: 'Lax'
+        },
+        {
+          name: 'OptanonConsent',
+          value: 'isIABGlobal=false&datestamp=' +
+            encodeURIComponent(new Date().toUTCString()) +
+            '&version=202209.1.0&hosts=&consentId=' +
+            Math.random().toString(36).substring(2) +
+            '&interactionCount=1&landingPath=NotLandingPage&groups=C0001%3A1%2CC0002%3A0%2CC0003%3A0%2CC0004%3A0&geolocation=NL%3BNH&AwaitingReconsent=false',
+          domain: '.bol.com',
+          path: '/',
+          sameSite: 'Lax'
+        }
+      ]);
+
+      const page = await context.newPage();
+
+      await goToProduct(page, ean);
+      data = await extractCatalogue(page);
+      dataSource = 'browser';
+    }
+
+    const bolShippingDays = calculateBolShippingDays(data.shipping || '');
 
     const liveData = {
-      title: data.title,
-      price: data.price,
-      description: data.description,
-      images: data.images,
-      url: page.url(),
+      title: data.title || '',
+      price: data.price || 'N/A',
+      description: data.description || '',
+      images: data.images || [],
+      url: data.productUrl || data.url || '',
       hasAPlus: false,
-      shipping: bolShippingDays !== "N/A" ? `${bolShippingDays} days` : data.shipping,
+      shipping: bolShippingDays !== 'N/A' ? `${bolShippingDays} days` : (data.shipping || 'N/A'),
       shippingDays: bolShippingDays,
-      rawShipping: data.shipping,
-      variations: data.liveVariations && data.liveVariations.length > 5 ? data.liveVariations.split('|').length || 1 : 0,
-      bullets: data.bullets,
-      rawVariationsText: data.liveVariations || ''
+      rawShipping: data.shipping || '',
+      variations: data.liveVariations && data.liveVariations.length > 5
+        ? data.liveVariations.split('|').length || 1
+        : 0,
+      bullets: data.bullets || [],
+      rawVariationsText: data.liveVariations || '',
+      _dataSource: dataSource
     };
-    
+
     const auditResult = await performAudit(masterData, liveData, 'bol');
     res.json({ liveData, auditResult });
-    
+
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   } finally {
