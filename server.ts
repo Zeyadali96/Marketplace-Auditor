@@ -237,46 +237,96 @@ app.post("/api/audit/amazon", async (req, res) => {
     if (!amazonTitle) amazonTitle = $('meta[name="title"]').attr('content')?.split(': Amazon')[0] || "";
     if (!amazonTitle) amazonTitle = $('h1').first().text().trim() || "";
 // --- 1. Price Extraction ---
+    // FIXED buyBoxContext — add the missing 3P FBA containers, in priority order
     let buyBoxContext = $('#oneTimeBuyBox').length ? $('#oneTimeBuyBox') :
                         $('#newAccordionRow').length ? $('#newAccordionRow') :
                         $('#buyNewSection').length ? $('#buyNewSection') :
+                        $('#apex_offerDisplay_desktop').length ? $('#apex_offerDisplay_desktop') :
+                        $('#newUnifiedOfferDisplay').length ? $('#newUnifiedOfferDisplay') :
+                        $('#corePrice_feature_div').length ? $('#corePrice_feature_div') :
                         $('#desktop_buybox').length ? $('#desktop_buybox') :
                         $('#rightCol').length ? $('#rightCol') :
                         $('body');
 
-    let amazonPrice = buyBoxContext.find('.priceToPay .a-offscreen').first().text().trim() ||
-                      buyBoxContext.find('.a-price .a-offscreen').first().text().trim() ||
-                      $('#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen').first().text().trim() ||
-                      $('#corePrice_desktop .priceToPay .a-offscreen').first().text().trim() ||
-                      $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
-                      $('#corePrice_desktop .a-price .a-offscreen').first().text().trim() ||
-                      $('#buyNew_noncbb .a-price .a-offscreen').first().text().trim() ||
-                      $('#buyNewSection .a-price .a-offscreen').first().text().trim() ||
-                      $('#desktop_buybox .a-price .a-offscreen').first().text().trim() ||
-                      $('#price_inside_buybox').text().trim() ||
-                      $('.apex-core-price-identifier .a-offscreen').first().text().trim() ||
-                      $('#desktop_buybox .apexPriceToPay .a-offscreen').first().text().trim() ||
-                      $('#desktop_buybox .priceToPay .a-offscreen').first().text().trim() ||
-                      $('#rightCol .a-price .a-offscreen').first().text().trim() || "";
+    // FIXED amazonPrice — prioritise the buybox container, then specific 3P price IDs,
+    // then scoped fallbacks. The LAST resort ($('body') scan) is intentionally removed
+    // to prevent bleeding from "Frequently bought together" / carousel sections.
+    let amazonPrice =
+      // 1. Buybox-scoped priceToPay (works for both Amazon-sold and 3P sellers)
+      buyBoxContext.find('.priceToPay .a-offscreen').first().text().trim() ||
+      // 2. 3P FBA seller price containers (apex unified offer display)
+      $('#apex_offerDisplay_desktop .priceToPay .a-offscreen').first().text().trim() ||
+      $('#apex_offerDisplay_desktop .a-price .a-offscreen').first().text().trim() ||
+      $('#newUnifiedOfferDisplay .priceToPay .a-offscreen').first().text().trim() ||
+      $('#newUnifiedOfferDisplay .a-price .a-offscreen').first().text().trim() ||
+      // 3. Amazon-sold price containers
+      $('#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen').first().text().trim() ||
+      $('#corePrice_desktop .priceToPay .a-offscreen').first().text().trim() ||
+      $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
+      $('#corePrice_desktop .a-price .a-offscreen').first().text().trim() ||
+      // 4. corePrice_feature_div (3P FBA on .co.uk / .de / .nl)
+      $('#corePrice_feature_div .priceToPay .a-offscreen').first().text().trim() ||
+      $('#corePrice_feature_div .a-price .a-offscreen').first().text().trim() ||
+      // 5. Scoped buybox fallbacks (already present)
+      $('#buyNew_noncbb .a-price .a-offscreen').first().text().trim() ||
+      $('#buyNewSection .a-price .a-offscreen').first().text().trim() ||
+      $('#desktop_buybox .a-price .a-offscreen').first().text().trim() ||
+      $('#price_inside_buybox').text().trim() ||
+      $('.apex-core-price-identifier .a-offscreen').first().text().trim() ||
+      $('#desktop_buybox .apexPriceToPay .a-offscreen').first().text().trim() ||
+      $('#desktop_buybox .priceToPay .a-offscreen').first().text().trim() ||
+      // 6. rightCol scoped (safe because rightCol excludes product carousels)
+      $('#rightCol .priceToPay .a-offscreen').first().text().trim() ||
+      $('#rightCol .a-price .a-offscreen').first().text().trim() ||
+      "";
     amazonPrice = amazonPrice.replace(/\s+/g, ' ').trim();
 
     let listPrice = $('.basisPrice .a-offscreen').text().trim() || "";
 
-    // --- 2. Shipping Time Extraction ---
+    // FIXED shipping extraction
     let rawShippingTime = "";
-    const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim() || $('#deliveryBlockMessage').text().trim();
+    const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim() ||
+                            $('#deliveryBlockMessage').text().trim();
     const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().trim();
-    
-    // Often secondary contains "Fastest delivery" which is what we want
-    if (secondaryDelivery && (secondaryDelivery.toLowerCase().includes('fastest') || secondaryDelivery.toLowerCase().includes('snelste') || secondaryDelivery.toLowerCase().includes('rapide'))) {
+
+    // Promote secondaryDelivery if it signals a faster/premium option.
+    // Added: 'tomorrow', 'morgen', 'demain', 'domani', 'jutro', 'mañana' (next-day signals
+    // used on .co.uk/.de/.fr/.it/.nl when the 3P seller offers Prime next-day delivery).
+    // Also added: 'today', 'vandaag', 'aujourd', 'oggi', 'heute' (same-day signals).
+    const isFastDeliverySignal = (text: string) => {
+      const t = text.toLowerCase();
+      return t.includes('fastest') ||
+             t.includes('snelste') ||
+             t.includes('rapide') ||
+             t.includes('tomorrow') ||
+             t.includes('morgen') ||       // DE/NL "tomorrow"
+             t.includes('demain') ||       // FR
+             t.includes('domani') ||       // IT
+             t.includes('jutro') ||        // PL
+             t.includes('mañana') ||       // ES
+             t.includes('imorgon') ||      // SE
+             t.includes('today') ||
+             t.includes('vandaag') ||
+             t.includes('aujourd') ||
+             t.includes('oggi') ||
+             t.includes('heute');
+    };
+
+    if (secondaryDelivery && isFastDeliverySignal(secondaryDelivery)) {
       rawShippingTime = secondaryDelivery;
+    } else if (primaryDelivery && isFastDeliverySignal(primaryDelivery)) {
+      // Primary slot itself signals next-day/same-day — use it directly
+      rawShippingTime = primaryDelivery;
     } else {
       const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
       const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
       if (deliveryTimeAttr) {
         rawShippingTime = deliveryTimeAttr;
       } else {
-        rawShippingTime = primaryDelivery || deliveryBlock.find('.a-text-bold').first().text().trim() || deliveryBlock.text().trim() || "";
+        rawShippingTime = primaryDelivery ||
+                         deliveryBlock.find('.a-text-bold').first().text().trim() ||
+                         deliveryBlock.text().trim() ||
+                         "";
       }
     }
     rawShippingTime = rawShippingTime.replace(/\s+/g, ' ').trim();
@@ -305,19 +355,62 @@ app.post("/api/audit/amazon", async (req, res) => {
                             $('#merchant-info a').first().text().trim();
 
     if (!amazonBuyboxOwner) {
-      let mInfo = (buyBoxContext.find('#merchant-info').first().text() || $('#merchant-info').first().text()).toLowerCase();
-      if (mInfo.includes('sold by amazon') || mInfo.includes('verkauf durch amazon') || mInfo.includes('dispatched from and sold by amazon') || mInfo.includes('expédié et vendu par amazon') || mInfo.includes('amazon')) {
+      // Get merchant-info text scoped to buybox first, then global fallback
+      const merchantInfoEl = buyBoxContext.find('#merchant-info').first();
+      const mInfoRaw = merchantInfoEl.text() || $('#merchant-info').first().text();
+      const mInfo = mInfoRaw.toLowerCase();
+
+      // FIXED: Only treat as Amazon-sold when Amazon is explicitly the SELLER,
+      // not just the dispatcher. FBA sellers dispatch from Amazon but are NOT Amazon.
+      // Exact phrases that mean Amazon itself holds the buybox:
+      const amazonIsSeller =
+        /\bsold by amazon\b/i.test(mInfoRaw) ||
+        /\bdispatched from and sold by amazon\b/i.test(mInfoRaw) ||
+        /\bverkauf durch amazon\b/i.test(mInfoRaw) ||
+        /\bexpédié et vendu par amazon\b/i.test(mInfoRaw) ||
+        /\bverzonden en verkocht door amazon\b/i.test(mInfoRaw) ||
+        /\bspedito da e venduto da amazon\b/i.test(mInfoRaw) ||
+        /\bvendido por amazon\b/i.test(mInfoRaw) ||
+        /\bverkauft von amazon\b/i.test(mInfoRaw);
+
+      if (amazonIsSeller) {
         amazonBuyboxOwner = "Amazon";
+      } else if (mInfo.length > 0) {
+        // Extract the actual seller name from merchant-info.
+        // The anchor tag inside merchant-info links to the seller's storefront.
+        const sellerLink = merchantInfoEl.find('a').first().text().trim() ||
+                           $('#merchant-info a').first().text().trim();
+        if (sellerLink && sellerLink.toLowerCase() !== 'amazon') {
+          amazonBuyboxOwner = sellerLink;
+        } else {
+          // Last resort: strip known prefixes and return the raw text
+          amazonBuyboxOwner = mInfoRaw
+            .replace(/Dispatched from and sold by\s*/i, '')
+            .replace(/Dispatched from Amazon\s*\.?\s*/i, '')
+            .replace(/Sold by\s*/i, '')
+            .replace(/Fulfilled by Amazon\s*\.?\s*/i, '')
+            .replace(/\|.*$/s, '')           // strip everything after a pipe
+            .trim();
+        }
       } else {
-        amazonBuyboxOwner = buyBoxContext.find('.offer-display-feature-text-message').first().text().trim() ||
-                            $('#desktop_buybox .offer-display-feature-text-message').first().text().trim() || 
-                            $('#rightCol .offer-display-feature-text-message').first().text().trim() ||
-                            $('#merchant-info').first().text().trim();
+        amazonBuyboxOwner =
+          buyBoxContext.find('.offer-display-feature-text-message').first().text().trim() ||
+          $('#desktop_buybox .offer-display-feature-text-message').first().text().trim() ||
+          $('#rightCol .offer-display-feature-text-message').first().text().trim() ||
+          "";
       }
     }
 
-    // Clean up if it contains "Sold by" or similar
-    amazonBuyboxOwner = amazonBuyboxOwner.replace(/Sold by\s*:?\s*/gi, '').replace(/Venduto da\s*:?\s*/gi, '').replace(/Verkauf durch\s*:?\s*/gi, '').trim();
+    // Clean residual prefixes from any extraction path
+    amazonBuyboxOwner = amazonBuyboxOwner
+      .replace(/Sold by\s*:?\s*/gi, '')
+      .replace(/Venduto da\s*:?\s*/gi, '')
+      .replace(/Verkauf durch\s*:?\s*/gi, '')
+      .replace(/Dispatched from and sold by\s*/gi, '')
+      .replace(/Dispatched from Amazon\.?\s*/gi, '')
+      .replace(/Fulfilled by Amazon\.?\s*/gi, '')
+      .replace(/\|.*$/s, '')
+      .trim();
 
     // --- 7. Hardened Image Extraction ---
     const imageMap = new Map<string, string>();
@@ -565,47 +658,62 @@ app.post("/api/audit/amazon", async (req, res) => {
       if (rawShippingTime) {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
+        const raw = rawShippingTime.toLowerCase();
 
-        // More robust date matching for ES, IT, PL, SE, etc.
-        // Captures "2 de mayo", "el 2 de mayo", "2 di maggio", etc.
-        const dayMatch = rawShippingTime.match(/(\d{1,2})(?:\.?\s*(?:de|di|d')?\s*)(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|wrze|paź|listopad|grudzień|styczeń|luty|kwiecień|maj|maj|maj|czerwiec|lipiec|sierpień|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)/i) ||
-                         rawShippingTime.match(/(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|maj|mai|maj|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)(?:\s*(?:de|di)?\s*)(\d{1,2})/i);
-        
-        let targetDate: Date | null = null;
-        
-        if (dayMatch) {
-          const day = parseInt(dayMatch[1]);
-          const monthMatchStr = dayMatch[0].toLowerCase();
-          
-          const monthsEn = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-          const monthsDe = ['jan', 'feb', 'mär', 'apr', 'mai', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dez'];
-          const monthsEs = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-          const monthsIt = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic', 'maggio', 'giugno', 'luglio'];
-          const monthsPl = ['sty', 'lut', 'mar', 'kwi', 'maj', 'cze', 'lip', 'sie', 'wrz', 'paź', 'lis', 'gru', 'stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia'];
-          const monthsSe = ['jan', 'feb', 'mar', 'apr', 'maj', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
-          const monthsNl = ['jan', 'feb', 'maa', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
-          
-          let monthIndex = -1;
-          [monthsEn, monthsDe, monthsEs, monthsIt, monthsPl, monthsSe, monthsNl].forEach(mList => {
-            const idx = mList.findIndex(m => monthMatchStr.includes(m));
-            if (idx !== -1) {
-              monthIndex = idx % 12;
-            }
-          });
+        // ── Shortcut: same-day signals ───────────────────────────────────────────
+        if (raw.includes('today') || raw.includes('vandaag') || raw.includes('aujourd') ||
+            raw.includes('oggi') || raw.includes('heute')) {
+          shippingDays = "0";
+        }
+        // ── Shortcut: next-day signals ────────────────────────────────────────────
+        else if (raw.includes('tomorrow') || raw.includes('morgen') || raw.includes('demain') ||
+                 raw.includes('domani') || raw.includes('jutro') || raw.includes('mañana') ||
+                 raw.includes('imorgon')) {
+          shippingDays = "1";
+        }
+        // ── Shortcut: day-after-tomorrow ─────────────────────────────────────────
+        else if (raw.includes('overmorgen') || raw.includes('après-demain') || raw.includes('dopodomani')) {
+          shippingDays = "2";
+        }
+        else {
+          // ── Date-based calculation (existing logic, unchanged) ─────────────────
+          const dayMatch = rawShippingTime.match(/(\d{1,2})(?:\.?\s*(?:de|di|d')?\s*)(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|wrze|paź|listopad|grudzień|styczeń|luty|kwiecień|maj|maj|maj|czerwiec|lipiec|sierpień|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)/i) ||
+                           rawShippingTime.match(/(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|maj|mai|maj|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)(?:\s*(?:de|di)?\s*)(\d{1,2})/i);
 
-          if (monthIndex !== -1) {
-            targetDate = new Date(today.getFullYear(), monthIndex, day);
-            if (targetDate < today && monthIndex < 2) {
-              targetDate.setFullYear(today.getFullYear() + 1);
+          let targetDate: Date | null = null;
+
+          if (dayMatch) {
+            const day = parseInt(dayMatch[1]);
+            const monthMatchStr = dayMatch[0].toLowerCase();
+
+            const monthsEn = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+            const monthsDe = ['jan', 'feb', 'mär', 'apr', 'mai', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dez'];
+            const monthsEs = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+            const monthsIt = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic', 'maggio', 'giugno', 'luglio'];
+            const monthsPl = ['sty', 'lut', 'mar', 'kwi', 'maj', 'cze', 'lip', 'sie', 'wrz', 'paź', 'lis', 'gru', 'stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia'];
+            const monthsSe = ['jan', 'feb', 'mar', 'apr', 'maj', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+            const monthsNl = ['jan', 'feb', 'maa', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+
+            let monthIndex = -1;
+            [monthsEn, monthsDe, monthsEs, monthsIt, monthsPl, monthsSe, monthsNl].forEach(mList => {
+              const idx = mList.findIndex(m => monthMatchStr.includes(m));
+              if (idx !== -1) { monthIndex = idx % 12; }
+            });
+
+            if (monthIndex !== -1) {
+              targetDate = new Date(today.getFullYear(), monthIndex, day);
+              if (targetDate < today && monthIndex < 2) {
+                targetDate.setFullYear(today.getFullYear() + 1);
+              }
             }
           }
-        }
 
-        if (targetDate) {
-          targetDate.setHours(0, 0, 0, 0);
-          const diffTime = targetDate.getTime() - today.getTime();
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          if (diffDays >= 0) shippingDays = diffDays.toString();
+          if (targetDate) {
+            targetDate.setHours(0, 0, 0, 0);
+            const diffTime = targetDate.getTime() - today.getTime();
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            if (diffDays >= 0) shippingDays = diffDays.toString();
+          }
         }
       }
     } catch (e: any) {
