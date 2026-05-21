@@ -17,10 +17,14 @@ chromiumExtra.use(stealth);
     }
     const browser = await chromiumExtra.launch(launchOpts);
     
-    for (const asin of ['B007671GXU', 'B0087OXZFI']) {
-        const context = await browser.newContext({ locale: 'en-GB' });
+    const testConfigs = [
+      { asin: 'B00OLZ9TJ8', domain: 'amazon.co.uk', locale: 'en-GB' },
+      { asin: 'B00OLZ9TJ8', domain: 'amazon.de', locale: 'de-DE' }
+    ];
+    for (const config of testConfigs) {
+        const context = await browser.newContext({ locale: config.locale });
         const page = await context.newPage();
-        await page.goto(`https://www.amazon.co.uk/dp/${asin}`);
+        await page.goto(`https://www.${config.domain}/dp/${config.asin}`);
         await page.waitForTimeout(3000);
         let content = await page.content();
         
@@ -33,7 +37,7 @@ chromiumExtra.use(stealth);
                 if (['image', 'stylesheet', 'font'].includes(route.request().resourceType())) return route.abort();
                 route.continue();
             });
-            await page.goto(`https://www.amazon.co.uk/dp/${asin}`);
+            await page.goto(`https://www.${config.domain}/dp/${config.asin}`);
             await page.waitForTimeout(3000);
             content = await page.content();
         }
@@ -76,7 +80,7 @@ chromiumExtra.use(stealth);
         }
         amazonBuyboxOwner = amazonBuyboxOwner.replace(/Sold by\s*:?\s*/gi, '').replace(/Venduto da\s*:?\s*/gi, '').replace(/Verkauf durch\s*:?\s*/gi, '').trim();
 
-        console.log(`ASIN ${asin} => Price: ${amazonPrice}, Buybox: ${amazonBuyboxOwner}`);
+        console.log(`ASIN ${config.asin} on ${config.domain} => Price: ${amazonPrice}, Buybox: ${amazonBuyboxOwner}`);
 
         await context.close();
     }

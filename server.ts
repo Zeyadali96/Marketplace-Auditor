@@ -49,6 +49,33 @@ app.get('/api/proxy-image', async (req, res) => {
   }
 });
 
+// Helper to normalize price strings to dots
+function cleanAndNormalizePrice(priceStr: string): string {
+  if (!priceStr) return "";
+  let s = priceStr.trim();
+  // Remove space between numbers (e.g. "1 250,50" -> "1250,50")
+  s = s.replace(/\s/g, '');
+  
+  if (s.includes('.') && s.includes(',')) {
+    if (s.indexOf('.') > s.indexOf(',')) {
+      s = s.replace(/,/g, '');
+    } else {
+      s = s.replace(/\./g, '').replace(/,/g, '.');
+    }
+  } else if (s.includes(',')) {
+    const parts = s.split(',');
+    const lastPart = parts[parts.length - 1].replace(/[^0-9]/g, '');
+    if (lastPart.length === 2 || lastPart.length === 1) {
+      s = s.replace(/,/g, '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  }
+  // Select characters and decimals
+  const match = s.match(/\d+(\.\d+)?/);
+  return match ? match[0] : s.replace(/[^0-9.]/g, '');
+}
+
 // 2. Audit Amazon
 app.post("/api/audit/amazon", async (req, res) => {
   let browser;
@@ -139,10 +166,8 @@ app.post("/api/audit/amazon", async (req, res) => {
         const cookieButtons = ['#sp-cc-accept', 'input[name="accept"]', '#cookie-accept', '#accept-cookies', '.a-button-inner input[data-action="accept-cookies"]'];
         for (const selector of cookieButtons) {
           if (await page.isVisible(selector)) {
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null),
-              page.click(selector)
-            ]);
+            await page.click(selector).catch(() => null);
+            await page.waitForTimeout(500);
             break;
           }
         }
@@ -163,8 +188,7 @@ app.post("/api/audit/amazon", async (req, res) => {
             await locBtn.click({ force: true });
             
             // Wait for popover to appear - use broader selector for input
-            // Sometimes it's a different popover or needs a moment
-            await page.waitForTimeout(600);
+            await page.waitForTimeout(1000);
             const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="code"], input[name="zipCode"]';
             const inputVisible = await page.waitForSelector(zipInputSelector, { state: 'visible', timeout: 15000 }).catch(() => null);
             
@@ -178,26 +202,31 @@ app.post("/api/audit/amazon", async (req, res) => {
               }, zipInputSelector);
               
               await page.type(zipInputSelector, locConfig.zip, { delay: 60 });
+              await page.keyboard.press('Enter');
               
               const applyBtn = '#GLUXZipUpdate input[type="submit"], #GLUXZipUpdate > span > input, #GLUXZipUpdate_Buttons input, #GLUXZipUpdate input.a-button-input, #GLUXZipUpdate_Buttons span.a-button-inner input';
               await page.click(applyBtn).catch(() => null);
               
               // CRITICAL: Wait 1.5s for backend to register zip
-              await page.waitForTimeout(1200);
+              await page.waitForTimeout(1500);
               
-              const confirmBtn = '#GLUXConfirmClose, #GLUXConfirmResponse, input[data-action="GLUXConfirmResponse"], .a-popover-footer input, #GLUXConfirmClose input, .a-popover-footer span.a-button-inner input';
+              const confirmBtn = '#GLUXConfirmClose, #GLUXConfirmResponse, input[data-action="GLUXConfirmResponse"], .a-popover-footer input, #GLUXConfirmClose input, #GLUXConfirmClose-announce, .a-popover-footer span.a-button-inner input, button[name="glowDoneButton"]';
               const confirmBtnVisible = await page.waitForSelector(confirmBtn, { timeout: 8000 }).catch(() => null);
               if (confirmBtnVisible) {
                 await page.click(confirmBtn).catch(() => null);
               }
               
-              await page.waitForTimeout(600);
+              await page.waitForTimeout(1500);
+              
+              // FORCE REFRESH/RELOAD to ensure the new delivery address is applied and price/shipping times are updated
+              console.log(`Reloading page for ${domain} after location zip code unlock...`);
+              await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
             } else {
               console.warn("Zip input popover never appeared.");
             }
           }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.warn("Location UI injection skipped or failed:", err.message);
       }
 
@@ -279,9 +308,10 @@ app.post("/api/audit/amazon", async (req, res) => {
       $('#rightCol .priceToPay .a-offscreen').first().text().trim() ||
       $('#rightCol .a-price .a-offscreen').first().text().trim() ||
       "";
-    amazonPrice = amazonPrice.replace(/\s+/g, ' ').trim();
+    amazonPrice = cleanAndNormalizePrice(amazonPrice);
 
     let listPrice = $('.basisPrice .a-offscreen').text().trim() || "";
+    listPrice = cleanAndNormalizePrice(listPrice);
 
     // FIXED shipping extraction
     let rawShippingTime = "";
