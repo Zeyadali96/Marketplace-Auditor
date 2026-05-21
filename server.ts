@@ -250,8 +250,6 @@ app.post("/api/audit/amazon", async (req, res) => {
                       $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
                       $('#corePrice_desktop .a-price .a-offscreen').first().text().trim() ||
                       $('#buyNew_noncbb .a-price .a-offscreen').first().text().trim() ||
-                      $('#buyNewSection .a-price .a-offscreen').first().text().trim() ||
-                      $('#desktop_buybox .a-price .a-offscreen').first().text().trim() ||
                       $('#price_inside_buybox').text().trim() ||
                       $('.apex-core-price-identifier .a-offscreen').first().text().trim() ||
                       $('#desktop_buybox .apexPriceToPay .a-offscreen').first().text().trim() ||
@@ -747,16 +745,14 @@ async function goToProduct(page: any, searchTerm: string) {
     }
 
     if (!isAkamaiChallenge(content, title)) return true;
-    console.log('[BOL] Akamai WAF challenge detected — waiting for auto-resolve...');
+    console.log('[BOL] Akamai WAF challenge detected — waiting for quick auto-resolve...');
     
     // Jiggle the mouse to trigger Akamai behavioral telemetry
     try {
       await page.mouse.move(100, 100);
       await page.waitForTimeout(200);
       await page.mouse.move(300, 200);
-      await page.waitForTimeout(200);
       await page.mouse.wheel(0, 150);
-      await page.mouse.move(150, 400);
     } catch (_) {}
     
     try {
@@ -768,19 +764,10 @@ async function goToProduct(page: any, searchTerm: string) {
         if (document.documentElement.outerHTML.includes('lang="nl-NL"')) return true;
         if (document.body && document.body.innerHTML.length > 20000) return true;
         return false;
-      }, { timeout: 20_000, polling: 500 });
+      }, { timeout: 4_000, polling: 500 });
     } catch (e) {
       console.log('[BOL] Akamai auto-resolve wait finished.');
     }
-    content = await page.content().catch(() => '');
-    title = await page.title().catch(() => '');
-    
-    if (!isAkamaiChallenge(content, title)) return true;
-    // Last resort: reload
-    console.log('[BOL] Trying full reload...');
-    await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => null);
-    await page.waitForTimeout(1_000);
-    
     content = await page.content().catch(() => '');
     title = await page.title().catch(() => '');
     
@@ -862,7 +849,7 @@ async function goToProduct(page: any, searchTerm: string) {
   // Go directly to the search URL (proven to be stealthier on Railway)
   console.log('[BOL] Step 2: Navigating directly to search URL...');
   try {
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
   } catch (_) {}
   await handleCookieConsent();
   // Step 6: Wait intelligently for search results or product redirect
@@ -876,7 +863,7 @@ async function goToProduct(page: any, searchTerm: string) {
              document.querySelector('.ui-kit-card') ||
              document.body.innerText.toLowerCase().includes('0 resultaten') ||
              document.body.innerText.toLowerCase().includes('geen resultaten');
-    }, { timeout: 15_000, polling: 500 });
+    }, { timeout: 8_000, polling: 500 });
   } catch (e) {
     console.log('[BOL] Timeout waiting for search results or redirect to settle.');
   }
