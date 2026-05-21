@@ -861,7 +861,14 @@ async function tryBolViaGemini(ean: string): Promise<any | null> {
   }
 
   try {
-    const genai = new GoogleGenAI({ apiKey });
+    const genai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
     const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(ean)}`;
 
     console.log('[BOL GEMINI] Fetching Bol.com via Gemini URL Context...');
@@ -882,7 +889,7 @@ Extract and return ONLY a JSON object (no markdown, no explanation) with these e
 Return ONLY the JSON object. No other text.`;
 
     const response = await genai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-3.5-flash',
       contents: prompt,
       config: {
         tools: [{ urlContext: {} }],
