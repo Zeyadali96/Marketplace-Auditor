@@ -1355,6 +1355,7 @@ app.post("/api/audit/bol", async (req, res) => {
 
     // Railway deployment fix: keep headless as boolean false to bypass Playwright's default headless flag,
     // and explicitly pass '--headless=new' to Chromium to use the new stealthier headless mode that doesn't need X11.
+    // (Minor update to trigger a deployment)
     const launchOpts: any = {
       headless: false,
       args: [
