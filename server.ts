@@ -819,65 +819,6 @@ function getScoreGrade(score: number): string {
 
 // --- Bol.com Helpers ---
 
-// ── BOL STRATEGY 1: Direct JSON API (no browser needed) ──────────────────────
-// Bol.com's internal product endpoints return JSON for known EANs/product IDs.
-// These endpoints are used by Bol's own mobile app and are less WAF-protected
-// than the storefront HTML pages.
-async function tryBolJsonApi(ean: string): Promise<any | null> {
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'nl-NL,nl;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Referer': 'https://www.bol.com/nl/nl/',
-    'Origin': 'https://www.bol.com',
-    'sec-fetch-site': 'same-origin',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-dest': 'empty',
-    'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Windows"',
-    'DNT': '1'
-  };
-
-  try {
-    const response = await axios.get(
-      `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(ean)}`,
-      {
-        headers: {
-          ...headers,
-          'Accept': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest'
-        },
-        timeout: 10_000,
-        validateStatus: (s) => s < 500
-      }
-    );
-
-    if (response.status === 200 && response.headers['content-type']?.includes('json')) {
-      const data = response.data;
-      const products = data?.searchResult?.products || data?.products || data?.items || [];
-      if (products.length > 0) {
-        const p = products[0];
-        return {
-          title: p.title || p.shortDescription || '',
-          price: p.offerData?.offers?.[0]?.price?.toString() || p.price?.toString() || 'N/A',
-          shipping: p.offerData?.offers?.[0]?.deliveryInfo || p.deliveryInfo || p.offerData?.offers?.[0]?.deliveryInfoHeading || 'N/A',
-          description: p.longDescription || p.description || '',
-          images: (p.images || []).map((i: any) => i.url || i).filter(Boolean),
-          bullets: [],
-          liveVariations: '',
-          _source: 'json-api'
-        };
-      }
-    }
-  } catch (e) {
-    console.log('[BOL JSON API] Endpoint 1 failed:', (e as Error).message);
-  }
-
-  return null;
-}
-
 // ── BOL STRATEGY 2: Gemini URL Context ────────────────────────────────────────
 // Gemini's urlContext tool fetches the given URL from Google's own servers.
 // Google's IPs are not flagged by Akamai, so this bypasses the WAF entirely.
@@ -1514,27 +1455,22 @@ app.post("/api/audit/bol", async (req, res) => {
     let data: any = null;
     let dataSource = 'browser';
 
-    // ── Strategy 1: Direct JSON API (fastest, no browser) ────────────────────
-    console.log('[BOL] Trying Strategy 1: Direct JSON API...');
-    data = await tryBolJsonApi(ean);
+    // ── Strategy 1: Gemini URL Context (skipping broken JSON API) ──────────────
+    // Note: tryBolJsonApi() was removed because it requests HTML search page
+    // with JSON headers, wastes a request, and triggers WAF. Skipping it.
+    console.log('[BOL] Trying Strategy 1: Gemini URL Context...');
+    data = await tryBolViaGemini(ean);
     if (data) {
-      console.log('[BOL] Strategy 1 succeeded.');
-      dataSource = 'json-api';
+      console.log('[BOL] Strategy 1 succeeded via Gemini.');
+      dataSource = 'gemini';
     }
 
-    // ── Strategy 2: Gemini URL Context ────────────────────────────────────────
+    // ── Strategy 2: Playwright stealth browser (hardened) ─────────────────────
+    // Add delay before browser strategy to reduce rapid-fire requests
     if (!data) {
-      console.log('[BOL] Trying Strategy 2: Gemini URL Context...');
-      data = await tryBolViaGemini(ean);
-      if (data) {
-        console.log('[BOL] Strategy 2 succeeded via Gemini.');
-        dataSource = 'gemini';
-      }
-    }
-
-    // ── Strategy 3: Playwright stealth browser (hardened) ─────────────────────
-    if (!data) {
-      console.log('[BOL] Trying Strategy 3: Playwright stealth browser...');
+      console.log('[BOL] Adding 2-second delay before browser strategy to avoid WAF detection...');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      console.log('[BOL] Trying Strategy 2: Playwright stealth browser...');
 
       const launchOpts: any = {
         headless: false,
