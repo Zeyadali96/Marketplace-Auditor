@@ -236,8 +236,15 @@ app.post("/api/audit/amazon", async (req, res) => {
     if (!amazonTitle) amazonTitle = $('meta[name="title"]').attr('content')?.split(': Amazon')[0] || "";
     if (!amazonTitle) amazonTitle = $('h1').first().text().trim() || "";
 // --- 1. Price Extraction ---
-    let amazonPrice = $('.priceToPay .a-offscreen').first().text().trim() ||
-                      $('.a-price .a-offscreen').first().text().trim() ||
+    let buyBoxContext = $('#oneTimeBuyBox').length ? $('#oneTimeBuyBox') :
+                        $('#newAccordionRow').length ? $('#newAccordionRow') :
+                        $('#buyNewSection').length ? $('#buyNewSection') :
+                        $('#desktop_buybox').length ? $('#desktop_buybox') :
+                        $('#rightCol').length ? $('#rightCol') :
+                        $('body');
+
+    let amazonPrice = buyBoxContext.find('.priceToPay .a-offscreen').first().text().trim() ||
+                      buyBoxContext.find('.a-price .a-offscreen').first().text().trim() ||
                       $('#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen').first().text().trim() ||
                       $('#corePrice_desktop .priceToPay .a-offscreen').first().text().trim() ||
                       $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen').first().text().trim() ||
@@ -260,14 +267,15 @@ app.post("/api/audit/amazon", async (req, res) => {
     const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().trim();
     
     // Often secondary contains "Fastest delivery" which is what we want
-    if (secondaryDelivery && secondaryDelivery.toLowerCase().includes('fastest')) {
+    if (secondaryDelivery && (secondaryDelivery.toLowerCase().includes('fastest') || secondaryDelivery.toLowerCase().includes('snelste') || secondaryDelivery.toLowerCase().includes('rapide'))) {
       rawShippingTime = secondaryDelivery;
     } else {
-      const deliveryTimeAttr = $('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
+      const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
+      const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
       if (deliveryTimeAttr) {
         rawShippingTime = deliveryTimeAttr;
       } else {
-        rawShippingTime = primaryDelivery || "";
+        rawShippingTime = primaryDelivery || deliveryBlock.find('.a-text-bold').first().text().trim() || deliveryBlock.text().trim() || "";
       }
     }
     rawShippingTime = rawShippingTime.replace(/\s+/g, ' ').trim();
@@ -278,7 +286,15 @@ app.post("/api/audit/amazon", async (req, res) => {
     const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
     // --- 3. Buybox Owner Extraction (Modern tabular design first) ---
-    let amazonBuyboxOwner = $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
+    let amazonBuyboxOwner = buyBoxContext.find('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[tabular-attribute-name="Verzonden en verkocht door"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[tabular-attribute-name="Dispatched from and sold by"] .tabular-buybox-text').first().text().trim() ||
+                            buyBoxContext.find('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
+                            buyBoxContext.find('#sellerProfileTriggerId').first().text().trim() ||
+                            buyBoxContext.find('#merchant-info a').first().text().trim() ||
+                            $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
                             $('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
                             $('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
                             $('div[tabular-attribute-name="Verzonden en verkocht door"] .tabular-buybox-text').first().text().trim() ||
@@ -288,11 +304,12 @@ app.post("/api/audit/amazon", async (req, res) => {
                             $('#merchant-info a').first().text().trim();
 
     if (!amazonBuyboxOwner) {
-      let mInfo = ($('#merchant-info').first().text() || '').toLowerCase();
+      let mInfo = (buyBoxContext.find('#merchant-info').first().text() || $('#merchant-info').first().text()).toLowerCase();
       if (mInfo.includes('sold by amazon') || mInfo.includes('verkauf durch amazon') || mInfo.includes('dispatched from and sold by amazon') || mInfo.includes('expédié et vendu par amazon') || mInfo.includes('amazon')) {
         amazonBuyboxOwner = "Amazon";
       } else {
-        amazonBuyboxOwner = $('#desktop_buybox .offer-display-feature-text-message').first().text().trim() || 
+        amazonBuyboxOwner = buyBoxContext.find('.offer-display-feature-text-message').first().text().trim() ||
+                            $('#desktop_buybox .offer-display-feature-text-message').first().text().trim() || 
                             $('#rightCol .offer-display-feature-text-message').first().text().trim() ||
                             $('#merchant-info').first().text().trim();
       }
