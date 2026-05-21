@@ -771,54 +771,33 @@ async function goToProduct(page: any, searchTerm: string) {
   // Helper: robustly handle cookie consent banner
   const handleCookieConsent = async () => {
     try {
-      const consentSelectors = [
-        'button#js-accept-all-cookies',
-        '[data-test="consent-assign-all"]',
-        '#onetrust-accept-btn-handler',
-        'button[class*="accept"]',
-        'button[id*="accept"]',
-      ];
-      let clicked = false;
-      for (const sel of consentSelectors) {
-        const btn = await page.$(sel).catch(() => null);
-        if (btn && await btn.isVisible().catch(() => false)) {
-          console.log(`[BOL] Clicking consent button: ${sel}`);
-          // Awaiting navigation because clicking consent often triggers a page reload on Bol.com
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null),
-            btn.click().catch(() => null)
-          ]);
-          clicked = true;
-          break;
+      // Fast JS click to avoid costly element handle polling
+      const jsClicked = await page.evaluate(() => {
+        const btns = [
+          document.querySelector('button#js-accept-all-cookies'),
+          document.querySelector('[data-test="consent-assign-all"]'),
+          document.querySelector('button[data-test="consent-modal-accept"]'),
+          document.querySelector('#onetrust-accept-btn-handler')
+        ];
+        for (const b of btns) {
+          if (b && (b as HTMLElement).offsetHeight > 0) { (b as HTMLElement).click(); return true; }
         }
-      }
-      if (!clicked) {
-        // JS fallback
-        const jsClicked = await page.evaluate(() => {
-          const btns = [
-            document.querySelector('button#js-accept-all-cookies'),
-            document.querySelector('[data-test="consent-assign-all"]'),
-            document.querySelector('button[data-test="consent-modal-accept"]')
-          ];
-          for (const b of btns) {
-            if (b) { (b as HTMLElement).click(); return true; }
-          }
-          
-          const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
-          const target = buttons.find(b => {
-            const t = (b.textContent || '').toLowerCase();
-            return t.includes('akkoord') || t.includes('accepteer') || t.includes('accept') || t.includes('alle cookies');
-          });
-          if (target) {
-            (target as HTMLElement).click();
-            return true;
-          }
-          return false;
-        }).catch(() => false);
-        if (jsClicked) {
-          console.log(`[BOL] Clicked consent via JS fallback`);
-          await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => null);
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+        const target = buttons.find(b => {
+          const t = (b.textContent || '').toLowerCase();
+          return (t.includes('akkoord') || t.includes('accepteer') || t.includes('accept') || t.includes('alle cookies')) && (b as HTMLElement).offsetHeight > 0;
+        });
+        if (target) {
+          (target as HTMLElement).click();
+          return true;
         }
+        return false;
+      }).catch(() => false);
+      
+      if (jsClicked) {
+        console.log(`[BOL] Clicked consent via JS`);
+        // Wait briefly for React/AJAX to hide the overlay, no full navigation required
+        await page.waitForTimeout(500); 
       }
       
       // Force overlay removal if it still exists to prevent pointer-events blocks
@@ -827,8 +806,6 @@ async function goToProduct(page: any, searchTerm: string) {
         if (overlay) (overlay as HTMLElement).style.display = 'none';
         document.body.style.overflow = 'auto';
       }).catch(() => null);
-      
-      await page.waitForTimeout(1000);
     } catch (_) {}
   };
   // Go directly to the search URL (proven to be stealthier on Railway)
@@ -1289,19 +1266,26 @@ app.post("/api/audit/bol", async (req, res) => {
     // Launch stealth-enabled browser
     browser = await chromiumExtra.launch(launchOpts);
     
+    // Extract real Chromium version from base browser to avoid TLS vs UA mismatch
+    const dummyCtx = await browser.newContext();
+    const dummyPage = await dummyCtx.newPage();
+    const rawUA = await dummyPage.evaluate(() => navigator.userAgent).catch(() => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/133.0.0.0 Safari/537.36');
+    await dummyCtx.close();
+    
+    const cleanUA = rawUA.replace('HeadlessChrome', 'Chrome');
+    const chromeVerMatch = cleanUA.match(/Chrome\/(\d+)\./);
+    const chromeVer = chromeVerMatch ? chromeVerMatch[1] : "133";
+    
     // Create context with explicitly defined modern User-Agent and headers
     // This is CRITICAL because without it, Playwright sends "HeadlessChrome" in the raw HTTP headers,
     // which Akamai detects instantly, even if the JS navigator object is spoofed by stealth.
     const context = await browser.newContext({
-      // Updated to Chrome 136 (latest stable 2025/2026).
-      // The UA, sec-ch-ua header, and TLS fingerprint must all agree on the same
-      // version — Akamai cross-checks all three to detect spoofing.
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+      userAgent: cleanUA,
       viewport: { width: Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366, height: Math.floor(Math.random() * (1080 - 768 + 1)) + 768 },
       locale: 'nl-NL',
       extraHTTPHeaders: {
         'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-        'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
+        'sec-ch-ua': `"Chromium";v="${chromeVer}", "Google Chrome";v="${chromeVer}", "Not-A.Brand";v="99"`,
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
         'upgrade-insecure-requests': '1'
