@@ -711,15 +711,9 @@ async function goToProduct(page: any, searchTerm: string) {
   const searchUrl = `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(searchTerm)}`;
   console.log(`[BOL] Searching for: ${searchTerm}`);
   // Step 1: Pre-inject consent cookies to bypass cookie banners entirely
+  // Disabled as injecting cookies prematurely might trigger Akamai WAF on Railway
   try {
-    await page.context().addCookies([
-      { name: 'consent-platform-cookie-grp-1', value: '1', domain: '.bol.com', path: '/' },
-      { name: 'consent-platform-cookie-grp-2', value: '1', domain: '.bol.com', path: '/' },
-      { name: 'consent-platform-cookie-grp-3', value: '1', domain: '.bol.com', path: '/' },
-      { name: 'consent-platform-cookie-grp-4', value: '1', domain: '.bol.com', path: '/' },
-      { name: 'consent-platform-cookie-grp-gdpr', value: '1', domain: '.bol.com', path: '/' },
-      { name: 'CONSENTMGR', value: 'c1:1%7Cc2:1%7Cc3:1%7Cc4:1%7Cts:' + Date.now() + '%7Cconsent:true', domain: '.bol.com', path: '/' },
-    ]);
+    // await page.context().addCookies([ ... ]);
   } catch (e) {
     console.log('[BOL] Cookie pre-injection warning:', (e as Error).message);
   }
@@ -851,95 +845,12 @@ async function goToProduct(page: any, searchTerm: string) {
       await page.waitForTimeout(1000);
     } catch (_) {}
   };
-  // Step 2: Navigate to HOMEPAGE first (not search URL) to establish a legitimate session
-  console.log('[BOL] Step 2: Navigating to homepage first...');
+  // Go directly to the search URL (proven to be stealthier on Railway)
+  console.log('[BOL] Step 2: Navigating directly to search URL...');
   try {
-    await page.goto('https://www.bol.com/nl/nl/', { waitUntil: 'networkidle', timeout: 20_000 });
-    await page.waitForTimeout(2_000);
-  } catch (e) {
-    console.log(`[BOL] Homepage navigation warning: ${(e as Error).message}`);
-  }
-  // Step 3: Handle Akamai challenge on homepage
-  await waitForAkamai();
-  // Step 4: Handle cookie consent banner if it still appears
+    await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 30_000 });
+  } catch (_) {}
   await handleCookieConsent();
-  // Step 5: Type search term into search box like a human
-  console.log('[BOL] Step 5: Typing search term into search box...');
-  let searchWorked = false;
-  const searchInputSelectors = [
-    'input[data-test="search-input"]',
-    'input[name="searchtext"]',
-    '#searchfor',
-    'input[type="search"]',
-    'input[placeholder*="zoek"]',
-    'input[placeholder*="Zoek"]',
-    '.search-input',
-  ];
-  for (const sel of searchInputSelectors) {
-    try {
-      const input = await page.$(sel);
-      if (input && await input.isVisible()) {
-        await input.click();
-        await page.waitForTimeout(100);
-        // Clear any existing text
-        await input.fill('');
-        await page.waitForTimeout(100);
-        // Type the search term with human-like delays
-        await page.type(sel, searchTerm, { delay: 20 + Math.floor(Math.random() * 30) });
-        await page.waitForTimeout(200);
-        
-        // Wait for navigation after pressing Enter
-        await Promise.all([
-          page.waitForNavigation({ waitUntil: 'networkidle', timeout: 10_000 }).catch(() => null),
-          page.keyboard.press('Enter')
-        ]);
-        
-        console.log(`[BOL] Typed "${searchTerm}" into ${sel} and pressed Enter`);
-        searchWorked = true;
-        break;
-      }
-    } catch (e) {
-      console.log(`[BOL] Search input ${sel} failed:`, (e as Error).message);
-    }
-  }
-  // Fallback: if no search box found, try clicking the search button after typing
-  if (!searchWorked) {
-    console.log('[BOL] Trying search button approach...');
-    try {
-      for (const sel of searchInputSelectors) {
-        const input = await page.$(sel);
-        if (input && await input.isVisible()) {
-          await input.click();
-          await input.fill('');
-          await page.type(sel, searchTerm, { delay: 50 });
-          
-          const searchTrigger = await page.$('button[data-test="search-button"], .search-toggle, [aria-label="Zoeken"]');
-          if (searchTrigger) {
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: 'networkidle', timeout: 10_000 }).catch(() => null),
-              searchTrigger.click().catch(() => null)
-            ]);
-            console.log(`[BOL] Typed "${searchTerm}" and clicked search button`);
-            searchWorked = true;
-          } else {
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: 'networkidle', timeout: 10_000 }).catch(() => null),
-              page.keyboard.press('Enter')
-            ]);
-            searchWorked = true;
-          }
-          break;
-        }
-      }
-    } catch (_) {}
-  }
-  // Last fallback: direct URL navigation if search box approach failed
-  if (!searchWorked) {
-    console.log('[BOL] Search box not found — falling back to direct URL navigation');
-    try {
-      await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20_000 });
-    } catch (_) {}
-  }
   // Step 6: Wait intelligently for search results or product redirect
   await page.waitForTimeout(1_000);
   try {
