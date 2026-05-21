@@ -720,6 +720,7 @@ async function goToProduct(page: any, searchTerm: string) {
   // Helper: detect Akamai WAF challenge page
   const isAkamaiChallenge = (c: string, t: string) => {
     const isBolTitle = t.toLowerCase() === 'bol' || t.toLowerCase() === 'bol.com';
+    const cLower = c.toLowerCase();
     
     // Explicitly prevent Cookie Consent or actual storefronts from being flagged as Akamai
     if (c.includes('js-accept-all-cookies') || c.includes('consent-assign-all') || c.includes('search-input') || c.includes('lang="nl-NL"')) {
@@ -730,6 +731,7 @@ async function goToProduct(page: any, searchTerm: string) {
            c.includes('Toegang tot deze pagina is geweigerd') ||
            c.includes('Access Denied') ||
            c.includes('Pardon Our Interruption') ||
+           cLower.includes('ip adres') && cLower.includes('geblokkeerd') ||
            (isBolTitle && c.includes('<meta name="Pragma" content="no-cache">')) ||
            (isBolTitle && !c.includes('lang="nl-NL"'));
   };
@@ -877,17 +879,20 @@ async function goToProduct(page: any, searchTerm: string) {
   }
   let content = await page.content().catch(() => '');
   let title = await page.title().catch(() => '');
+  let contentLower = content.toLowerCase();
+  
   // Step 7: Check for IP block (only REAL IP blocks)
-  if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') ||
-      content.includes('Human verification')) {
+  if ((contentLower.includes('ip adres') && contentLower.includes('geblokkeerd')) || contentLower.includes('rustig aan speed racer') ||
+      contentLower.includes('human verification')) {
     console.warn('[BOL] IP blocked — pausing then retrying...');
     await page.waitForTimeout(5_000);
     await page.setViewportSize({ width: Math.floor(Math.random() * (420 - 375 + 1)) + 375, height: 844 });
     await page.goto(searchUrl, { waitUntil: 'networkidle', timeout: 20_000 }).catch(() => null);
     await page.waitForTimeout(1_000);
     content = await page.content().catch(() => '');
-    if (content.includes('IP adres is geblokkeerd') || content.includes('rustig aan speed racer') ||
-        content.includes('Human verification')) {
+    contentLower = content.toLowerCase();
+    if ((contentLower.includes('ip adres') && contentLower.includes('geblokkeerd')) || contentLower.includes('rustig aan speed racer') ||
+        contentLower.includes('human verification')) {
       throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
     }
   }
@@ -963,6 +968,14 @@ async function goToProduct(page: any, searchTerm: string) {
 }
 
 async function extractCatalogue(page: any) {
+  let initialContent = await page.content().catch(() => '');
+  let initialContentLower = initialContent.toLowerCase();
+  if ((initialContentLower.includes('ip adres') && initialContentLower.includes('geblokkeerd')) || 
+      initialContentLower.includes('rustig aan speed racer') ||
+      initialContentLower.includes('human verification')) {
+    throw new Error('WAF_BLOCKED: Bol.com blocked the request. IP address is blocked by their anti-bot system.');
+  }
+
   await page.waitForLoadState('load', { timeout: 45_000 }).catch(() => null);
   await page.waitForLoadState('networkidle', { timeout: 45_000 }).catch(() => null);
   await page.waitForTimeout(1_200);
