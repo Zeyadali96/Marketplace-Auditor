@@ -1,6 +1,5 @@
 {
   "name": "Marketplace Audit Automation",
   "description": "Automated Quality Check tool comparing Google Sheets master data against live Amazon and Bol.com listings with image comparison and text validation.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "requestFramePermissions": []
 }

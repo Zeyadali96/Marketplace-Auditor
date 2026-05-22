@@ -76,65 +76,6 @@ function cleanAndNormalizePrice(priceStr: string): string {
   return match ? match[0] : s.replace(/[^0-9.]/g, '');
 }
 
-// Helper to filter and clean shipping text for FREE delivery or standard option, ignoring Prime/expedited sections
-function cleanAndExtractFreeShipping(text: string): string {
-  if (!text) return "";
-  
-  // Split by common delimiters (like newlines, dots, or 'Or' / 'Ou' / 'Oder') to isolate individual delivery statements
-  const sentences = text.split(/[.\n]|\bOr\b|\bOu\b|\bOder\b|\bOppure\b|\bO\b|\bOf\b|\bEller\b/);
-  
-  const freeKeywords = [
-    'free', 'gratuite', 'gratuit', 'kostenfreie', 'kostenlose', 'gratis', 'gratuita', 'darmowa', 'bezpłatna', 'fri frakt', 'gratis bezorging'
-  ];
-  
-  const ignoreKeywords = [
-    'fastest', 'rapid', 'accélérée', 'beschleunigte', 'prime', 'tomorrow', 'demain', 'morgen', 'domani', 'jutro', 'mañana', 'imorgon', 'expedited'
-  ];
-  
-  let bestCandidate = "";
-  for (const s of sentences) {
-    const sLower = s.toLowerCase();
-    const hasFree = freeKeywords.some(kw => sLower.includes(kw));
-    const hasIgnore = ignoreKeywords.some(kw => sLower.includes(kw));
-    
-    if (hasFree && !hasIgnore) {
-      bestCandidate = s.trim();
-      break;
-    }
-  }
-  
-  if (!bestCandidate) {
-    for (const s of sentences) {
-      if (freeKeywords.some(kw => s.toLowerCase().includes(kw))) {
-        bestCandidate = s.trim();
-        break;
-      }
-    }
-  }
-  
-  if (!bestCandidate) {
-    for (const s of sentences) {
-      const sLower = s.toLowerCase().trim();
-      if (sLower && !ignoreKeywords.some(kw => sLower.includes(kw))) {
-        bestCandidate = s.trim();
-        break;
-      }
-    }
-  }
-  
-  if (!bestCandidate && sentences.length > 0) {
-    bestCandidate = sentences.find(s => s.trim().length > 0)?.trim() || "";
-  }
-  
-  let result = bestCandidate;
-  result = result.replace(/Order within\s*\d+\s*hrs.*$/i, '');
-  result = result.replace(/Commandez dans les.*$/i, '');
-  result = result.replace(/Bestellen Sie innerhalb.*$/i, '');
-  result = result.replace(/Details$/i, '').trim();
-  
-  return result;
-}
-
 // 2. Audit Amazon
 app.post("/api/audit/amazon", async (req, res) => {
   let browser;
@@ -245,8 +186,7 @@ app.post("/api/audit/amazon", async (req, res) => {
           const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { visible: true, timeout: 15000 }).catch(() => null);
           if (locBtn) {
             await locBtn.click({ force: true });
-            // Wait for the location popover to appear (event-driven, max 3s) instead of blind 2s wait
-            await page.waitForSelector('#GLUXCountryList, #GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="code"]', { state: 'visible', timeout: 3000 }).catch(() => null);
+            await page.waitForTimeout(2000);
 
             // 1. Check if Country Selection Dropdown is shown instead of Zip update input (e.g. from international proxy IP)
             const countryListSelector = '#GLUXCountryList';
@@ -254,19 +194,17 @@ app.post("/api/audit/amazon", async (req, res) => {
             if (countryListVisible && locConfig.countryCode) {
               console.log(`Country list dropdown detected inside Amazon location popover. Selecting: ${locConfig.countryCode}`);
               await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
-              await page.waitForTimeout(400); // brief settle after dropdown change
+              await page.waitForTimeout(1000);
 
               // Click "Go" or "Apply" button for country selection
               const goBtnSelector = 'input[aria-labelledby="GLUXCountryList-announce"], button[name="glowDoneButton"], #GLUXCountryList-announce + input, .a-popover-footer input';
               await page.click(goBtnSelector, { force: true }).catch(() => null);
-              // Wait for popover to update rather than blind 3s sleep
-              await page.waitForTimeout(600);
+              await page.waitForTimeout(3000);
 
               // Reload or re-click to get zip code inputs visible!
               console.log('Re-clicking global location slot after selecting country...');
               await page.click('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { force: true }).catch(() => null);
-              // Wait for zip input to appear (event-driven) instead of blind 2s
-              await page.waitForSelector('#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"]', { state: 'visible', timeout: 3000 }).catch(() => null);
+              await page.waitForTimeout(2000);
             }
 
             // 2. Now handle the standard zip/postcode input field!
@@ -282,34 +220,26 @@ app.post("/api/audit/amazon", async (req, res) => {
                 }
               }, zipInputSelector);
               
-              console.log(`Typing zip/postcode: ${locConfig.zip}`);
               await page.type(zipInputSelector, locConfig.zip, { delay: 60 });
-              await page.waitForTimeout(200);
+              await page.keyboard.press('Enter');
               
-              const applyBtn = '#GLUXZipUpdateSubmit, #GLUXZipUpdateSubmit input, input[aria-labelledby="GLUXZipUpdateSubmit-announce"], #GLUXZipUpdate input[type="submit"], #GLUXZipUpdate > span > input, #GLUXZipUpdate_Buttons input, #GLUXZipUpdate input.a-button-input, #GLUXZipUpdate_Buttons span.a-button-inner input';
-              const applyBtnEl = await page.$(applyBtn).catch(() => null);
-              if (applyBtnEl) {
-                console.log("Found apply button, clicking it...");
-                await applyBtnEl.click({ force: true }).catch(() => null);
-              } else {
-                console.log("Apply button not found, pressing Enter to submit postcode...");
-                await page.keyboard.press('Enter');
-              }
+              const applyBtn = '#GLUXZipUpdate input[type="submit"], #GLUXZipUpdate > span > input, #GLUXZipUpdate_Buttons input, #GLUXZipUpdate input.a-button-input, #GLUXZipUpdate_Buttons span.a-button-inner input';
+              await page.click(applyBtn).catch(() => null);
               
-              console.log("Waiting for zip update popover to reload AJAX...");
-              await page.waitForTimeout(1500); // Settle time for Ajax postcode update
+              // CRITICAL: Wait 1.5s for backend to register zip
+              await page.waitForTimeout(1500);
               
-              const confirmBtn = '#GLUXConfirmClose, #GLUXConfirmClose input, input[aria-labelledby="GLUXConfirmClose-announce"], #GLUXConfirmResponse, input[data-action="GLUXConfirmResponse"], .a-popover-footer input, #GLUXConfirmClose-announce, .a-popover-footer span.a-button-inner input, button[name="glowDoneButton"], .a-popover-footer button';
-              const confirmBtnVisible = await page.waitForSelector(confirmBtn, { timeout: 5000 }).catch(() => null);
+              const confirmBtn = '#GLUXConfirmClose, #GLUXConfirmResponse, input[data-action="GLUXConfirmResponse"], .a-popover-footer input, #GLUXConfirmClose input, #GLUXConfirmClose-announce, .a-popover-footer span.a-button-inner input, button[name="glowDoneButton"]';
+              const confirmBtnVisible = await page.waitForSelector(confirmBtn, { timeout: 8000 }).catch(() => null);
               if (confirmBtnVisible) {
-                console.log("Clicking confirm done/close button...");
-                await confirmBtnVisible.click({ force: true }).catch(() => null);
-                await page.waitForTimeout(600);
+                await page.click(confirmBtn).catch(() => null);
               }
               
-              // Reload to apply the new delivery address to price/shipping display
+              await page.waitForTimeout(1500);
+              
+              // FORCE REFRESH/RELOAD to ensure the new delivery address is applied and price/shipping times are updated
               console.log(`Reloading page for ${domain} after location zip code unlock...`);
-              await page.reload({ waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => null);
+              await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
             } else {
               console.warn("Zip input popover never appeared.");
             }
@@ -399,83 +329,54 @@ app.post("/api/audit/amazon", async (req, res) => {
       "";
     amazonPrice = cleanAndNormalizePrice(amazonPrice);
 
-    // --- VAT/TTC adjustment for region/business prices ---
-    const vatRates: Record<string, number> = {
-      'amazon.co.uk': 0.20,
-      'amazon.fr': 0.20,
-      'amazon.de': 0.19,
-      'amazon.it': 0.22,
-      'amazon.es': 0.21,
-      'amazon.nl': 0.21,
-      'amazon.pl': 0.23,
-      'amazon.se': 0.25,
-      'amazon.com.be': 0.21,
-    };
-
-    const vatRate = vatRates[domain] || 0;
-    if (vatRate > 0 && amazonPrice) {
-      const priceNum = parseFloat(amazonPrice);
-      if (priceNum > 0) {
-        // Find all price-like values inside the body text to locate a matched inclusive price
-        const bodyTextRaw = $('body').text();
-        const priceRegex = /\b\d+[,.]\d{2}\b/g;
-        let match;
-        const targetInclusive = priceNum * (1 + vatRate);
-        const scannedPrices: number[] = [];
-        
-        while ((match = priceRegex.exec(bodyTextRaw)) !== null) {
-          const val = parseFloat(match[0].replace(',', '.'));
-          if (val > 0 && !scannedPrices.includes(val)) {
-            scannedPrices.push(val);
-          }
-        }
-        
-        let foundInclusive = false;
-        let bestInclusivePrice = priceNum;
-        
-        for (const val of scannedPrices) {
-          if (Math.abs(val - targetInclusive) < 0.05 || Math.abs(val / targetInclusive - 1) < 0.01) {
-            bestInclusivePrice = val;
-            foundInclusive = true;
-            break;
-          }
-        }
-        
-        if (foundInclusive) {
-          console.log(`[VAT ADJUSTMENT] Found VAT-inclusive price of ${bestInclusivePrice} in the HTML nodes`);
-          amazonPrice = bestInclusivePrice.toFixed(2);
-        } else {
-          // If the page was rendered solely with exclusive prices due to geo IP/location cookie reset
-          const isExclVatPage = /excl\.?\s*VAT|excluding\s*VAT|hors\s*taxes|\bHT\b|\bsans\s*TVA/i.test(content);
-          const slotText = $('#nav-global-location-slot').text().trim();
-          const cleanZip = locConfig.zip.replace(/\s+/g, '').toLowerCase();
-          const cleanSlot = slotText.replace(/\s+/g, '').toLowerCase();
-          const locApplied = cleanSlot.includes(cleanZip) || 
-                             (locConfig.city && cleanSlot.includes(locConfig.city.toLowerCase()));
-                             
-          if (isExclVatPage || !locApplied) {
-            console.log(`[VAT ADJUSTMENT] Applying standard mathematical VAT adjustment of ${(vatRate * 100)}% to match local detail page: ${targetInclusive.toFixed(2)}`);
-            amazonPrice = targetInclusive.toFixed(2);
-          }
-        }
-      }
-    }
-
     let listPrice = $('.basisPrice .a-offscreen').text().trim() || "";
     listPrice = cleanAndNormalizePrice(listPrice);
 
-    // FIXED shipping extraction - prioritizing FREE/Standard delivery over prime/expedited.
+    // FIXED shipping extraction
     let rawShippingTime = "";
     const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim() ||
                             $('#deliveryBlockMessage').text().trim();
     const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().trim();
 
-    const fullDeliveryText = `${primaryDelivery} ${secondaryDelivery}`.trim();
-    rawShippingTime = cleanAndExtractFreeShipping(fullDeliveryText);
+    // Promote secondaryDelivery if it signals a faster/premium option.
+    // Added: 'tomorrow', 'morgen', 'demain', 'domani', 'jutro', 'mañana' (next-day signals
+    // used on .co.uk/.de/.fr/.it/.nl when the 3P seller offers Prime next-day delivery).
+    // Also added: 'today', 'vandaag', 'aujourd', 'oggi', 'heute' (same-day signals).
+    const isFastDeliverySignal = (text: string) => {
+      const t = text.toLowerCase();
+      return t.includes('fastest') ||
+             t.includes('snelste') ||
+             t.includes('rapide') ||
+             t.includes('tomorrow') ||
+             t.includes('morgen') ||       // DE/NL "tomorrow"
+             t.includes('demain') ||       // FR
+             t.includes('domani') ||       // IT
+             t.includes('jutro') ||        // PL
+             t.includes('mañana') ||       // ES
+             t.includes('imorgon') ||      // SE
+             t.includes('today') ||
+             t.includes('vandaag') ||
+             t.includes('aujourd') ||
+             t.includes('oggi') ||
+             t.includes('heute');
+    };
 
-    if (!rawShippingTime) {
+    if (secondaryDelivery && isFastDeliverySignal(secondaryDelivery)) {
+      rawShippingTime = secondaryDelivery;
+    } else if (primaryDelivery && isFastDeliverySignal(primaryDelivery)) {
+      // Primary slot itself signals next-day/same-day — use it directly
+      rawShippingTime = primaryDelivery;
+    } else {
       const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
-      rawShippingTime = cleanAndExtractFreeShipping(deliveryBlock.text().trim());
+      const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
+      if (deliveryTimeAttr) {
+        rawShippingTime = deliveryTimeAttr;
+      } else {
+        rawShippingTime = primaryDelivery ||
+                         deliveryBlock.find('.a-text-bold').first().text().trim() ||
+                         deliveryBlock.text().trim() ||
+                         "";
+      }
     }
     rawShippingTime = rawShippingTime.replace(/\s+/g, ' ').trim();
 
@@ -990,32 +891,23 @@ async function tryBolViaGemini(ean: string): Promise<any | null> {
 
     console.log('[BOL GEMINI] Generating content with googleSearch grounding for EAN:', ean);
 
-    // CRITICAL: Instruct Gemini to navigate to the PRODUCT PAGE, not return search result titles.
-    // Without explicit step-by-step instructions, Gemini returns search-result page titles like
-    // "'8721398908038' in Alle artikelen" instead of the real product heading.
-    const prompt = `You must find the product page on bol.com for EAN "${ean}".
-
-Step 1: Use Google Search to find the exact bol.com product page. Search for: site:bol.com "${ean}"
-Step 2: The product page URL looks like https://www.bol.com/nl/nl/p/product-name/XXXXXXXX/ — it contains /p/ in the path. Do NOT use search result pages whose URL contains /s/ or searchtext=.
-Step 3: From the PRODUCT PAGE extract all fields below.
-
-The title must be the actual product name shown as the h1 heading on the product page — NOT a search query, NOT a tab title, NOT a category name.
-
-Return ONLY a raw JSON object with no markdown fences, no explanation, no preamble:
+    const prompt = `Perform a google search for "bol.com product ${ean}" or search for "${ean}" directly on bol.com.
+Locate the official product page on bol.com.
+Extract and return a single, exact JSON object with the following schema:
 {
-  "title": "actual product name from the h1 on the product page",
-  "price": "price as digits only e.g. 14.99",
-  "shipping": "delivery message from the product page buybox e.g. Morgen in huis",
-  "description": "product description text, first 500 characters",
-  "images": ["full image url 1", "full image url 2"],
-  "bullets": ["product feature 1", "product feature 2"],
-  "productUrl": "full product page URL — must contain /p/ not /s/",
-  "liveVariations": "variant options if present, else empty string"
+  "title": "exact full product title on bol.com",
+  "price": "correct numerical price string e.g. 14.99",
+  "shipping": "correct shipping time/delivery message e.g. 'Morgen in huis' or 'Uiterlijk donderdag 22 mei'",
+  "description": "product description details, first 500 characters",
+  "images": ["image url 1", "image url 2"],
+  "bullets": ["feature point 1", "feature point 2"],
+  "productUrl": "the direct final product link on bol.com",
+  "liveVariations": "variation options if any, else empty string"
 }
-If you only found a search results page and no product page, return: {"error":"no_product_page_found"}`;
+Make sure all details (pricing, title, shipping) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No conversational helper text, no markdown other than \`\`\`json.`;
 
     const response = await genai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-3.5-flash',
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -1028,50 +920,24 @@ If you only found a search results page and no product page, return: {"error":"n
 
     const jsonText = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
 
-    // Validation helper: reject any result that looks like a search results page, not a product page.
-    // This catches Gemini returning "'8721398908038' in Alle artikelen" or similar.
-    const isSearchResultTitle = (title: string) => {
-      if (!title) return true;
-      const t = title.toLowerCase();
-      // Search result page patterns
-      if (t.includes('in alle artikelen')) return true;
-      if (t.includes('zoekresultaten')) return true;
-      if (/^['"]?\d{8,14}['"]?/.test(t)) return true; // starts with EAN digits
-      if (t.includes('resultaten voor')) return true;
-      if (t.includes('search results')) return true;
-      if (title.length < 5) return true;
-      return false;
-    };
-
-    let parsedResult: any = null;
     try {
-      parsedResult = JSON.parse(jsonText);
+      const parsed = JSON.parse(jsonText);
+      if (parsed && parsed.title) {
+        parsed._source = 'gemini-google-search';
+        return parsed;
+      }
     } catch (parseErr) {
-      // JSON parse failed on clean text — try extracting the first {...} block
       const jsonMatch = rawText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        try { parsedResult = JSON.parse(jsonMatch[0]); } catch (_) {}
+        try {
+          const extracted = JSON.parse(jsonMatch[0]);
+          if (extracted && extracted.title) {
+            extracted._source = 'gemini-google-search';
+            return extracted;
+          }
+        } catch (_) {}
       }
-      if (!parsedResult) {
-        console.log('[BOL GEMINI] JSON parse failed:', parseErr);
-      }
-    }
-
-    if (parsedResult) {
-      // Reject error sentinel
-      if (parsedResult.error === 'no_product_page_found') {
-        console.log('[BOL GEMINI] Gemini could not find a product page, falling back.');
-        return null;
-      }
-      // Reject search-result titles
-      if (parsedResult.title && isSearchResultTitle(parsedResult.title)) {
-        console.log('[BOL GEMINI] Rejected: title looks like a search result page:', parsedResult.title);
-        return null;
-      }
-      if (parsedResult.title) {
-        parsedResult._source = 'gemini-google-search';
-        return parsedResult;
-      }
+      console.log('[BOL GEMINI] JSON parse failed:', parseErr);
     }
   } catch (e: any) {
     console.log('[BOL GEMINI] Strategy failed:', e.message);
