@@ -332,53 +332,167 @@ app.post("/api/audit/amazon", async (req, res) => {
     let listPrice = $('.basisPrice .a-offscreen').text().trim() || "";
     listPrice = cleanAndNormalizePrice(listPrice);
 
-    // FIXED shipping extraction
+    // Parse FREE Delivery Shipping Time (ignoring Prime expedited / fastest options)
     let rawShippingTime = "";
-    const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim() ||
-                            $('#deliveryBlockMessage').text().trim();
-    const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().trim();
 
-    // Promote secondaryDelivery if it signals a faster/premium option.
-    // Added: 'tomorrow', 'morgen', 'demain', 'domani', 'jutro', 'mañana' (next-day signals
-    // used on .co.uk/.de/.fr/.it/.nl when the 3P seller offers Prime next-day delivery).
-    // Also added: 'today', 'vandaag', 'aujourd', 'oggi', 'heute' (same-day signals).
-    const isFastDeliverySignal = (text: string) => {
+    const freeDeliveryKeywords = [
+      'free delivery',
+      'free shipping',
+      'gratis-lieferung',
+      'kostenlose lieferung',
+      'gratis versand',
+      'kostenloser versand',
+      'gratisversand',
+      'livraison gratuite',
+      'consegna gratuita',
+      'spedizione gratuita',
+      'entrega gratuita',
+      'envío gratis',
+      'envio gratis',
+      'entrega gratis',
+      'gratis bezorging',
+      'gratis verzending',
+      'darmowa dostawa',
+      'bezpłatna dostawa',
+      'bezplatna dostawa',
+      'gratis leverans',
+      'fri frakt'
+    ];
+
+    const primeExpeditedKeywords = [
+      'prime member',
+      'prime-mitglieder',
+      'les membres prime',
+      'i clienti prime',
+      'los clientes prime',
+      'prime-leden',
+      'prime-medlemmar',
+      'expedited',
+      'schnellere lieferung',
+      'fastest delivery',
+      'fastest',
+      'snelste bezorging',
+      'livraison accélérée',
+      'livraison plus rapide',
+      'consegna più rapida',
+      'entrega más rápida',
+      'snabbare leverans',
+      'szybsza dostawa',
+      'order within',
+      'bestellen sie innerhalb',
+      'commandez dans',
+      'ordina entro',
+      'pide dentro',
+      'bestel binnen',
+      'zamów w ciągu',
+      'stunden',
+      'minuten',
+      'hours',
+      'minutes',
+      'heures',
+      'ore',
+      'ore e',
+      'horas y',
+      'godzin',
+      'minut',
+      'timmar'
+    ];
+
+    const hasFreeDeliveryKeyword = (text: string) => {
       const t = text.toLowerCase();
-      return t.includes('fastest') ||
-             t.includes('snelste') ||
-             t.includes('rapide') ||
-             t.includes('tomorrow') ||
-             t.includes('morgen') ||       // DE/NL "tomorrow"
-             t.includes('demain') ||       // FR
-             t.includes('domani') ||       // IT
-             t.includes('jutro') ||        // PL
-             t.includes('mañana') ||       // ES
-             t.includes('imorgon') ||      // SE
-             t.includes('today') ||
-             t.includes('vandaag') ||
-             t.includes('aujourd') ||
-             t.includes('oggi') ||
-             t.includes('heute');
+      return freeDeliveryKeywords.some(kw => t.includes(kw));
     };
 
-    if (secondaryDelivery && isFastDeliverySignal(secondaryDelivery)) {
-      rawShippingTime = secondaryDelivery;
-    } else if (primaryDelivery && isFastDeliverySignal(primaryDelivery)) {
-      // Primary slot itself signals next-day/same-day — use it directly
+    const hasPrimeExpeditedKeyword = (text: string) => {
+      const t = text.toLowerCase();
+      return primeExpeditedKeywords.some(kw => t.includes(kw));
+    };
+
+    const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().replace(/\s+/g, ' ').trim() ||
+                            $('#deliveryBlockMessage').text().replace(/\s+/g, ' ').trim();
+    const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().replace(/\s+/g, ' ').trim();
+
+    // Prioritize parsing the primary or secondary text if it directly contains "FREE delivery" and is NOT Prime expedited
+    if (primaryDelivery && hasFreeDeliveryKeyword(primaryDelivery) && !hasPrimeExpeditedKeyword(primaryDelivery)) {
       rawShippingTime = primaryDelivery;
-    } else {
-      const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
-      const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
-      if (deliveryTimeAttr) {
-        rawShippingTime = deliveryTimeAttr;
+    } else if (secondaryDelivery && hasFreeDeliveryKeyword(secondaryDelivery) && !hasPrimeExpeditedKeyword(secondaryDelivery)) {
+      rawShippingTime = secondaryDelivery;
+    } else if (primaryDelivery && hasFreeDeliveryKeyword(primaryDelivery)) {
+      // If the sentence contains both (e.g. fast expedited + standard free), split and find the FREE delivery portion
+      const sentences = primaryDelivery.split(/[.·•|]|\bor\b|\boder\b|\bou\b|\bo\b|\blub\b|\beller\b/i);
+      const matched = sentences.find(s => hasFreeDeliveryKeyword(s) && !hasPrimeExpeditedKeyword(s));
+      if (matched) {
+        rawShippingTime = matched.trim();
       } else {
-        rawShippingTime = primaryDelivery ||
-                         deliveryBlock.find('.a-text-bold').first().text().trim() ||
-                         deliveryBlock.text().trim() ||
-                         "";
+        const anyFree = sentences.find(s => hasFreeDeliveryKeyword(s));
+        if (anyFree) {
+          rawShippingTime = anyFree.trim();
+        } else {
+          rawShippingTime = primaryDelivery;
+        }
+      }
+    } else if (secondaryDelivery && hasFreeDeliveryKeyword(secondaryDelivery)) {
+      const sentences = secondaryDelivery.split(/[.·•|]|\bor\b|\boder\b|\bou\b|\bo\b|\blub\b|\beller\b/i);
+      const matched = sentences.find(s => hasFreeDeliveryKeyword(s) && !hasPrimeExpeditedKeyword(s));
+      if (matched) {
+        rawShippingTime = matched.trim();
+      } else {
+        const anyFree = sentences.find(s => hasFreeDeliveryKeyword(s));
+        if (anyFree) {
+          rawShippingTime = anyFree.trim();
+        } else {
+          rawShippingTime = secondaryDelivery;
+        }
+      }
+    } else {
+      // If not found in main slots directly, inspect the entire DELIVERY_BLOCK for any matching child node
+      const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
+      
+      let foundLine = "";
+      deliveryBlock.find('*').each((_, el) => {
+        const txt = $(el).text().replace(/\s+/g, ' ').trim();
+        if (txt && txt.length > 5 && txt.length < 150 && hasFreeDeliveryKeyword(txt) && !hasPrimeExpeditedKeyword(txt)) {
+          foundLine = txt;
+          return false; // break loop
+        }
+      });
+
+      if (!foundLine) {
+        // Try split whole delivery block text by newlines
+        const wholeText = deliveryBlock.text();
+        const lines = wholeText.split(/[\n\r]+/).map(l => l.replace(/\s+/g, ' ').trim()).filter(l => l.length > 5);
+        const bestLine = lines.find(l => hasFreeDeliveryKeyword(l) && !hasPrimeExpeditedKeyword(l));
+        if (bestLine) {
+          foundLine = bestLine;
+        } else {
+          const anyFreeLine = lines.find(l => hasFreeDeliveryKeyword(l));
+          if (anyFreeLine) {
+            foundLine = anyFreeLine;
+          }
+        }
+      }
+
+      if (foundLine) {
+        rawShippingTime = foundLine;
+      } else {
+        // Ultimate fallback to data-csa-c-delivery-time attribute or text bold or primary
+        const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
+        if (deliveryTimeAttr) {
+          rawShippingTime = deliveryTimeAttr;
+        } else {
+          rawShippingTime = primaryDelivery ||
+                           deliveryBlock.find('.a-text-bold').first().text().trim() ||
+                           deliveryBlock.text().replace(/\s+/g, ' ').trim() ||
+                           "";
+        }
       }
     }
-    rawShippingTime = rawShippingTime.replace(/\s+/g, ' ').trim();
+
+    // Clean up trailing/leading garbage from punctuation if split
+    rawShippingTime = rawShippingTime
+      .replace(/^[\s,.;:or|]+|[\s,.;:or|]+$/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
 
     let amazonDesc = $('#productDescription').text().trim();
     if (!amazonDesc) amazonDesc = $('#feature-bullets').text().trim();
