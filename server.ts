@@ -76,6 +76,65 @@ function cleanAndNormalizePrice(priceStr: string): string {
   return match ? match[0] : s.replace(/[^0-9.]/g, '');
 }
 
+// Helper to filter and clean shipping text for FREE delivery or standard option, ignoring Prime/expedited sections
+function cleanAndExtractFreeShipping(text: string): string {
+  if (!text) return "";
+  
+  // Split by common delimiters (like newlines, dots, or 'Or' / 'Ou' / 'Oder') to isolate individual delivery statements
+  const sentences = text.split(/[.\n]|\bOr\b|\bOu\b|\bOder\b|\bOppure\b|\bO\b|\bOf\b|\bEller\b/);
+  
+  const freeKeywords = [
+    'free', 'gratuite', 'gratuit', 'kostenfreie', 'kostenlose', 'gratis', 'gratuita', 'darmowa', 'bezpłatna', 'fri frakt', 'gratis bezorging'
+  ];
+  
+  const ignoreKeywords = [
+    'fastest', 'rapid', 'accélérée', 'beschleunigte', 'prime', 'tomorrow', 'demain', 'morgen', 'domani', 'jutro', 'mañana', 'imorgon', 'expedited'
+  ];
+  
+  let bestCandidate = "";
+  for (const s of sentences) {
+    const sLower = s.toLowerCase();
+    const hasFree = freeKeywords.some(kw => sLower.includes(kw));
+    const hasIgnore = ignoreKeywords.some(kw => sLower.includes(kw));
+    
+    if (hasFree && !hasIgnore) {
+      bestCandidate = s.trim();
+      break;
+    }
+  }
+  
+  if (!bestCandidate) {
+    for (const s of sentences) {
+      if (freeKeywords.some(kw => s.toLowerCase().includes(kw))) {
+        bestCandidate = s.trim();
+        break;
+      }
+    }
+  }
+  
+  if (!bestCandidate) {
+    for (const s of sentences) {
+      const sLower = s.toLowerCase().trim();
+      if (sLower && !ignoreKeywords.some(kw => sLower.includes(kw))) {
+        bestCandidate = s.trim();
+        break;
+      }
+    }
+  }
+  
+  if (!bestCandidate && sentences.length > 0) {
+    bestCandidate = sentences.find(s => s.trim().length > 0)?.trim() || "";
+  }
+  
+  let result = bestCandidate;
+  result = result.replace(/Order within\s*\d+\s*hrs.*$/i, '');
+  result = result.replace(/Commandez dans les.*$/i, '');
+  result = result.replace(/Bestellen Sie innerhalb.*$/i, '');
+  result = result.replace(/Details$/i, '').trim();
+  
+  return result;
+}
+
 // 2. Audit Amazon
 app.post("/api/audit/amazon", async (req, res) => {
   let browser;
@@ -223,19 +282,29 @@ app.post("/api/audit/amazon", async (req, res) => {
                 }
               }, zipInputSelector);
               
+              console.log(`Typing zip/postcode: ${locConfig.zip}`);
               await page.type(zipInputSelector, locConfig.zip, { delay: 60 });
-              await page.keyboard.press('Enter');
+              await page.waitForTimeout(200);
               
-              const applyBtn = '#GLUXZipUpdate input[type="submit"], #GLUXZipUpdate > span > input, #GLUXZipUpdate_Buttons input, #GLUXZipUpdate input.a-button-input, #GLUXZipUpdate_Buttons span.a-button-inner input';
-              await page.click(applyBtn).catch(() => null);
+              const applyBtn = '#GLUXZipUpdateSubmit, #GLUXZipUpdateSubmit input, input[aria-labelledby="GLUXZipUpdateSubmit-announce"], #GLUXZipUpdate input[type="submit"], #GLUXZipUpdate > span > input, #GLUXZipUpdate_Buttons input, #GLUXZipUpdate input.a-button-input, #GLUXZipUpdate_Buttons span.a-button-inner input';
+              const applyBtnEl = await page.$(applyBtn).catch(() => null);
+              if (applyBtnEl) {
+                console.log("Found apply button, clicking it...");
+                await applyBtnEl.click({ force: true }).catch(() => null);
+              } else {
+                console.log("Apply button not found, pressing Enter to submit postcode...");
+                await page.keyboard.press('Enter');
+              }
               
-              // Wait for confirm button to appear (event-driven) instead of blind 1.5s
-              const confirmBtn = '#GLUXConfirmClose, #GLUXConfirmResponse, input[data-action="GLUXConfirmResponse"], .a-popover-footer input, #GLUXConfirmClose input, #GLUXConfirmClose-announce, .a-popover-footer span.a-button-inner input, button[name="glowDoneButton"]';
+              console.log("Waiting for zip update popover to reload AJAX...");
+              await page.waitForTimeout(1500); // Settle time for Ajax postcode update
+              
+              const confirmBtn = '#GLUXConfirmClose, #GLUXConfirmClose input, input[aria-labelledby="GLUXConfirmClose-announce"], #GLUXConfirmResponse, input[data-action="GLUXConfirmResponse"], .a-popover-footer input, #GLUXConfirmClose-announce, .a-popover-footer span.a-button-inner input, button[name="glowDoneButton"], .a-popover-footer button';
               const confirmBtnVisible = await page.waitForSelector(confirmBtn, { timeout: 5000 }).catch(() => null);
               if (confirmBtnVisible) {
-                await page.click(confirmBtn).catch(() => null);
-                // Brief pause for the popover dismiss animation, then reload
-                await page.waitForTimeout(300);
+                console.log("Clicking confirm done/close button...");
+                await confirmBtnVisible.click({ force: true }).catch(() => null);
+                await page.waitForTimeout(600);
               }
               
               // Reload to apply the new delivery address to price/shipping display
@@ -330,54 +399,83 @@ app.post("/api/audit/amazon", async (req, res) => {
       "";
     amazonPrice = cleanAndNormalizePrice(amazonPrice);
 
+    // --- VAT/TTC adjustment for region/business prices ---
+    const vatRates: Record<string, number> = {
+      'amazon.co.uk': 0.20,
+      'amazon.fr': 0.20,
+      'amazon.de': 0.19,
+      'amazon.it': 0.22,
+      'amazon.es': 0.21,
+      'amazon.nl': 0.21,
+      'amazon.pl': 0.23,
+      'amazon.se': 0.25,
+      'amazon.com.be': 0.21,
+    };
+
+    const vatRate = vatRates[domain] || 0;
+    if (vatRate > 0 && amazonPrice) {
+      const priceNum = parseFloat(amazonPrice);
+      if (priceNum > 0) {
+        // Find all price-like values inside the body text to locate a matched inclusive price
+        const bodyTextRaw = $('body').text();
+        const priceRegex = /\b\d+[,.]\d{2}\b/g;
+        let match;
+        const targetInclusive = priceNum * (1 + vatRate);
+        const scannedPrices: number[] = [];
+        
+        while ((match = priceRegex.exec(bodyTextRaw)) !== null) {
+          const val = parseFloat(match[0].replace(',', '.'));
+          if (val > 0 && !scannedPrices.includes(val)) {
+            scannedPrices.push(val);
+          }
+        }
+        
+        let foundInclusive = false;
+        let bestInclusivePrice = priceNum;
+        
+        for (const val of scannedPrices) {
+          if (Math.abs(val - targetInclusive) < 0.05 || Math.abs(val / targetInclusive - 1) < 0.01) {
+            bestInclusivePrice = val;
+            foundInclusive = true;
+            break;
+          }
+        }
+        
+        if (foundInclusive) {
+          console.log(`[VAT ADJUSTMENT] Found VAT-inclusive price of ${bestInclusivePrice} in the HTML nodes`);
+          amazonPrice = bestInclusivePrice.toFixed(2);
+        } else {
+          // If the page was rendered solely with exclusive prices due to geo IP/location cookie reset
+          const isExclVatPage = /excl\.?\s*VAT|excluding\s*VAT|hors\s*taxes|\bHT\b|\bsans\s*TVA/i.test(content);
+          const slotText = $('#nav-global-location-slot').text().trim();
+          const cleanZip = locConfig.zip.replace(/\s+/g, '').toLowerCase();
+          const cleanSlot = slotText.replace(/\s+/g, '').toLowerCase();
+          const locApplied = cleanSlot.includes(cleanZip) || 
+                             (locConfig.city && cleanSlot.includes(locConfig.city.toLowerCase()));
+                             
+          if (isExclVatPage || !locApplied) {
+            console.log(`[VAT ADJUSTMENT] Applying standard mathematical VAT adjustment of ${(vatRate * 100)}% to match local detail page: ${targetInclusive.toFixed(2)}`);
+            amazonPrice = targetInclusive.toFixed(2);
+          }
+        }
+      }
+    }
+
     let listPrice = $('.basisPrice .a-offscreen').text().trim() || "";
     listPrice = cleanAndNormalizePrice(listPrice);
 
-    // FIXED shipping extraction
+    // FIXED shipping extraction - prioritizing FREE/Standard delivery over prime/expedited.
     let rawShippingTime = "";
     const primaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').text().trim() ||
                             $('#deliveryBlockMessage').text().trim();
     const secondaryDelivery = $('#mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE').text().trim();
 
-    // Promote secondaryDelivery if it signals a faster/premium option.
-    // Added: 'tomorrow', 'morgen', 'demain', 'domani', 'jutro', 'mañana' (next-day signals
-    // used on .co.uk/.de/.fr/.it/.nl when the 3P seller offers Prime next-day delivery).
-    // Also added: 'today', 'vandaag', 'aujourd', 'oggi', 'heute' (same-day signals).
-    const isFastDeliverySignal = (text: string) => {
-      const t = text.toLowerCase();
-      return t.includes('fastest') ||
-             t.includes('snelste') ||
-             t.includes('rapide') ||
-             t.includes('tomorrow') ||
-             t.includes('morgen') ||       // DE/NL "tomorrow"
-             t.includes('demain') ||       // FR
-             t.includes('domani') ||       // IT
-             t.includes('jutro') ||        // PL
-             t.includes('mañana') ||       // ES
-             t.includes('imorgon') ||      // SE
-             t.includes('today') ||
-             t.includes('vandaag') ||
-             t.includes('aujourd') ||
-             t.includes('oggi') ||
-             t.includes('heute');
-    };
+    const fullDeliveryText = `${primaryDelivery} ${secondaryDelivery}`.trim();
+    rawShippingTime = cleanAndExtractFreeShipping(fullDeliveryText);
 
-    if (secondaryDelivery && isFastDeliverySignal(secondaryDelivery)) {
-      rawShippingTime = secondaryDelivery;
-    } else if (primaryDelivery && isFastDeliverySignal(primaryDelivery)) {
-      // Primary slot itself signals next-day/same-day — use it directly
-      rawShippingTime = primaryDelivery;
-    } else {
+    if (!rawShippingTime) {
       const deliveryBlock = $('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE, #mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage');
-      const deliveryTimeAttr = deliveryBlock.find('span[data-csa-c-delivery-time]').attr('data-csa-c-delivery-time');
-      if (deliveryTimeAttr) {
-        rawShippingTime = deliveryTimeAttr;
-      } else {
-        rawShippingTime = primaryDelivery ||
-                         deliveryBlock.find('.a-text-bold').first().text().trim() ||
-                         deliveryBlock.text().trim() ||
-                         "";
-      }
+      rawShippingTime = cleanAndExtractFreeShipping(deliveryBlock.text().trim());
     }
     rawShippingTime = rawShippingTime.replace(/\s+/g, ' ').trim();
 
