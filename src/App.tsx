@@ -20,7 +20,8 @@ import {
   ChevronDown,
   Database,
   ShoppingBag,
-  Info
+  Info,
+  Github
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -65,6 +66,16 @@ export default function App() {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [range, setRange] = useState({ start: 1, end: 10 });
   const [galleryModal, setGalleryModal] = useState<{ images: string[], title: string } | null>(null);
+
+  // GitHub Export states
+  const [gitHubToken, setGitHubToken] = useState(() => localStorage.getItem('ma_github_token') || '');
+  const [gitHubRepo, setGitHubRepo] = useState(() => localStorage.getItem('ma_github_repo') || '');
+  const [gitHubBranch, setGitHubBranch] = useState(() => localStorage.getItem('ma_github_branch') || 'main');
+  const [gitHubFilePath, setGitHubFilePath] = useState(() => localStorage.getItem('ma_github_filepath') || 'audit_results.csv');
+  const [githubFormat, setGithubFormat] = useState<'csv' | 'json'>('csv');
+  const [pushingToGitHub, setPushingToGitHub] = useState(false);
+  const [githubError, setGithubError] = useState<string | null>(null);
+  const [githubSuccess, setGithubSuccess] = useState<{ url: string, sha: string } | null>(null);
 
   const marketplaces = [
     { label: 'United Kingdom', value: 'amazon.co.uk', code: 'EN' },
@@ -196,6 +207,139 @@ export default function App() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  };
+
+  const commitToGitHub = async () => {
+    if (!gitHubToken || !gitHubRepo || !gitHubBranch || !gitHubFilePath) {
+      setGithubError('Please check all GitHub configuration settings.');
+      return;
+    }
+
+    setPushingToGitHub(true);
+    setGithubError(null);
+    setGithubSuccess(null);
+
+    try {
+      // 1. Generate Content State
+      let fileContent = '';
+      if (githubFormat === 'csv') {
+        const csvRows = [];
+        const headers = ['Row', 'Identifier', 'Score', 'Title Match', 'Description Match', 'Bullet Match %', 'Price', 'Shipping'];
+        csvRows.push(headers.join(','));
+
+        Object.entries(auditResults).forEach(([idx, res]: any) => {
+          const row = data[parseInt(idx)];
+          const id = mode === 'amazon' ? getVal(row, 'ASIN', 'asin') : getVal(row, 'EAN', 'ean');
+          const bulletMatch = res.auditResult.bullets ? (res.auditResult.bullets.filter((b: any) => b.match).length / (res.auditResult.bullets.length || 1)) : 0;
+          const score = calculateScore(res.auditResult, mode);
+          
+          const line = [
+            parseInt(idx) + 1,
+            id,
+            score,
+            res.auditResult.title.match ? 'YES' : 'NO',
+            res.auditResult.description.match ? 'YES' : 'NO',
+            Math.round(bulletMatch * 100) + '%',
+            res.auditResult.price.live,
+            res.auditResult.shipping.live
+          ];
+          csvRows.push(line.join(','));
+        });
+        fileContent = csvRows.join('\n');
+      } else {
+        const jsonObjects = Object.entries(auditResults).map(([idx, res]: any) => {
+          const row = data[parseInt(idx)];
+          const id = mode === 'amazon' ? getVal(row, 'ASIN', 'asin') : getVal(row, 'EAN', 'ean');
+          const bulletMatch = res.auditResult.bullets ? (res.auditResult.bullets.filter((b: any) => b.match).length / (res.auditResult.bullets.length || 1)) : 0;
+          const score = calculateScore(res.auditResult, mode);
+          return {
+            row: parseInt(idx) + 1,
+            identifier: id,
+            score,
+            titleMatch: res.auditResult.title.match ? 'YES' : 'NO',
+            descriptionMatch: res.auditResult.description.match ? 'YES' : 'NO',
+            bulletMatchPercent: Math.round(bulletMatch * 100) + '%',
+            price: res.auditResult.price.live,
+            shipping: res.auditResult.shipping.live,
+            timestamp: new Date().toISOString()
+          };
+        });
+        fileContent = JSON.stringify(jsonObjects, null, 2);
+      }
+
+      const cleanRepo = gitHubRepo.replace(/^\/|\/$/g, '').trim();
+      const cleanPath = gitHubFilePath.replace(/^\/|^\.\/|\/$/g, '').trim();
+
+      // 2. Fetch existing file SHA if it exists inside the repository
+      let existingFileSha: string | undefined;
+      try {
+        const getFileResp = await fetch(
+          `https://api.github.com/repos/${cleanRepo}/contents/${cleanPath}?ref=${gitHubBranch}`,
+          {
+            method: 'GET',
+            headers: {
+              'Authorization': `token ${gitHubToken}`,
+              'Accept': 'application/vnd.github+json'
+            }
+          }
+        );
+
+        if (getFileResp.status === 200) {
+          const existingFileJson = await getFileResp.json();
+          existingFileSha = existingFileJson.sha;
+        } else if (getFileResp.status !== 404) {
+          const errorJson = await getFileResp.json().catch(() => ({}));
+          throw new Error(errorJson.message || `HTTP error ${getFileResp.status}`);
+        }
+      } catch (getErr: any) {
+        console.warn('Could not check if file exists on GitHub branch. Details:', getErr.message);
+      }
+
+      // 1-byte encoding / Unicode helper for btoa
+      const u8ToBase64 = (str: string) => {
+        return window.btoa(
+          encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (_, p1) =>
+            String.fromCharCode(parseInt(p1, 16))
+          )
+        );
+      };
+
+      const base64Content = u8ToBase64(fileContent);
+
+      // 3. Put File Request to GitHub API
+      const putFileResp = await fetch(
+        `https://api.github.com/repos/${cleanRepo}/contents/${cleanPath}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Authorization': `token ${gitHubToken}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/vnd.github+json'
+          },
+          body: JSON.stringify({
+            message: `chore: update audit results [Marketplace Auditor] - ${githubFormat.toUpperCase()}`,
+            content: base64Content,
+            branch: gitHubBranch,
+            sha: existingFileSha
+          })
+        }
+      );
+
+      const putRes = await putFileResp.json();
+      if (!putFileResp.ok) {
+        throw new Error(putRes.message || `Failed to commit to GitHub (HTTP ${putFileResp.status})`);
+      }
+
+      setGithubSuccess({
+        url: putRes.content?.html_url || `https://github.com/${cleanRepo}/blob/${gitHubBranch}/${cleanPath}`,
+        sha: putRes.commit?.sha || 'unknown'
+      });
+    } catch (err: any) {
+      console.error('GitHub Push Error:', err);
+      setGithubError(err.message || 'An error occurred during GitHub sync.');
+    } finally {
+      setPushingToGitHub(false);
+    }
   };
   const runAudit = async (rowIndex: number, skipSave = false) => {
     const row = data[rowIndex];
@@ -452,6 +596,180 @@ export default function App() {
             </motion.div>
           )}
         </section>
+
+        {/* Export & GitHub Sync Panel */}
+        {data.length > 0 && (
+          <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-8">
+            <div className="flex items-center gap-2 text-slate-500 mb-4 border-b border-slate-100 pb-3">
+              <Github className="w-5 h-5 text-indigo-600" />
+              <div>
+                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-700">Export & GitHub Sync</h2>
+                <p className="text-[11px] text-slate-400 font-normal normal-case tracking-normal">Publish your audit report locally or save it directly to GitHub.</p>
+              </div>
+            </div>
+
+            {Object.keys(auditResults).length === 0 ? (
+              <div className="bg-amber-50 border border-amber-100 p-4 rounded-xl text-amber-700 flex items-start gap-3">
+                <Info className="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                <div className="text-xs">
+                  <span className="font-semibold">No Audited Results Yet:</span> Perform at least one product audit or use the <span className="font-bold font-mono">Audit Range</span> tool first to populate results before exporting.
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Column 1: Local Export */}
+                <div className="bg-slate-50 rounded-xl p-5 border border-slate-100 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        Local File
+                      </span>
+                    </div>
+                    <h3 className="text-sm font-bold text-slate-800 mb-1">Local CSV Download</h3>
+                    <p className="text-xs text-slate-500 mb-4">
+                      Save all {Object.keys(auditResults).length} currently audited rows to a localized CSV file on your desktop.
+                    </p>
+                  </div>
+                  <button
+                    onClick={exportResults}
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition-all shadow-sm flex items-center justify-center gap-2"
+                  >
+                    Download CSV Report
+                  </button>
+                </div>
+
+                {/* Column 2 & 3: GitHub Push */}
+                <div className="lg:col-span-2 bg-slate-50 rounded-xl p-5 border border-slate-100">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                          Cloud Versioning
+                        </span>
+                      </div>
+                      <h3 className="text-sm font-bold text-slate-800">Direct Commit to Repository</h3>
+                    </div>
+                    
+                    {/* Format Toggle Selector */}
+                    <div className="flex bg-white p-1 rounded-lg border border-slate-200 self-start">
+                      <button
+                        onClick={() => setGithubFormat('csv')}
+                        className={`text-[10px] uppercase font-extrabold px-3 py-1 rounded-md transition-all ${githubFormat === 'csv' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'}`}
+                      >
+                        CSV
+                      </button>
+                      <button
+                        onClick={() => setGithubFormat('json')}
+                        className={`text-[10px] uppercase font-extrabold px-3 py-1 rounded-md transition-all ${githubFormat === 'json' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'}`}
+                      >
+                        JSON
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">GitHub Personal Access Token (PAT)</label>
+                      <input
+                        type="password"
+                        value={gitHubToken}
+                        onChange={(e) => {
+                          setGitHubToken(e.target.value);
+                          localStorage.setItem('ma_github_token', e.target.value);
+                        }}
+                        placeholder="ghp_****************"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">Repository Path (owner/repo)</label>
+                      <input
+                        type="text"
+                        value={gitHubRepo}
+                        onChange={(e) => {
+                          setGitHubRepo(e.target.value);
+                          localStorage.setItem('ma_github_repo', e.target.value);
+                        }}
+                        placeholder="e.g. user/my-audit-repo"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">Branch Name</label>
+                      <input
+                        type="text"
+                        value={gitHubBranch}
+                        onChange={(e) => {
+                          setGitHubBranch(e.target.value);
+                          localStorage.setItem('ma_github_branch', e.target.value);
+                        }}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-extrabold uppercase tracking-wide text-slate-500">Destination File Path</label>
+                      <input
+                        type="text"
+                        value={gitHubFilePath}
+                        onChange={(e) => {
+                          setGitHubFilePath(e.target.value);
+                          localStorage.setItem('ma_github_filepath', e.target.value);
+                          // Suggest automated suffix extension
+                          if (githubFormat === 'json' && e.target.value.endsWith('.csv')) {
+                            const newPath = e.target.value.slice(0, -4) + '.json';
+                            setGitHubFilePath(newPath);
+                            localStorage.setItem('ma_github_filepath', newPath);
+                          } else if (githubFormat === 'csv' && e.target.value.endsWith('.json')) {
+                            const newPath = e.target.value.slice(0, -5) + '.csv';
+                            setGitHubFilePath(newPath);
+                            localStorage.setItem('ma_github_filepath', newPath);
+                          }
+                        }}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end">
+                    <button
+                      onClick={commitToGitHub}
+                      disabled={pushingToGitHub || !gitHubToken || !gitHubRepo || !gitHubBranch || !gitHubFilePath}
+                      className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold py-2 px-5 rounded-lg transition-all flex items-center gap-1.5 shadow-sm"
+                    >
+                      {pushingToGitHub ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Github className="w-3 h-3" />}
+                      Push {githubFormat.toUpperCase()} to GitHub Repo
+                    </button>
+                  </div>
+
+                  {githubError && (
+                    <div className="mt-3 p-3 bg-red-50 border border-red-100 text-red-600 text-xs rounded-xl flex items-center gap-2">
+                      <XCircle className="w-4 h-4 flex-shrink-0" />
+                      <span>{githubError}</span>
+                    </div>
+                  )}
+
+                  {githubSuccess && (
+                    <div className="mt-4 p-3 bg-green-50 border border-green-100 text-green-800 text-xs rounded-xl flex flex-col gap-1.5 shadow-inner">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0" />
+                        <span className="font-bold">Successfully Committed to GitHub!</span>
+                      </div>
+                      <p className="text-[10px] text-green-700 font-mono">Commit SHA: {githubSuccess.sha}</p>
+                      <a
+                        href={githubSuccess.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-indigo-600 hover:underline font-bold flex items-center gap-1 mt-1 inline-flex self-start"
+                      >
+                        View Committed File on GitHub <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Data Table */}
         {data.length > 0 && (

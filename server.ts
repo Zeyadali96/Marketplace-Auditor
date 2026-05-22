@@ -881,105 +881,110 @@ async function tryBolViaGemini(ean: string): Promise<any | null> {
   }
 
   try {
-    const genai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
+    const genai = new GoogleGenAI({ apiKey });
+
+    // ── PASS 1: Use googleSearch to find the real product page URL ──────────
+    // googleSearch reads Google's index (snippets + URLs). We use it only to
+    // discover the canonical /p/ URL — NOT to extract product data from snippets.
+    console.log('[BOL GEMINI] Pass 1: Searching for product page URL, EAN:', ean);
+
+    const searchResponse = await genai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: `Find the bol.com product page URL for EAN "${ean}". Use Google Search. Return ONLY the URL — no other text. The URL must start with https://www.bol.com and contain /p/ in the path. Example format: https://www.bol.com/nl/nl/p/product-name/9300000123456789/`,
+      config: {
+        tools: [{ googleSearch: {} }],
+        temperature: 0,
       }
     });
 
-    console.log('[BOL GEMINI] Generating content with googleSearch grounding for EAN:', ean);
+    const urlRaw = (searchResponse.text || '').trim();
+    console.log('[BOL GEMINI] Pass 1 raw response:', urlRaw.substring(0, 200));
 
-    // CRITICAL: Instruct Gemini to navigate to the PRODUCT PAGE, not return search result titles.
-    // Without explicit step-by-step instructions, Gemini returns search-result page titles like
-    // "'8721398908038' in Alle artikelen" instead of the real product heading.
-    const prompt = `You must find the product page on bol.com for EAN "${ean}".
+    // Extract the first bol.com /p/ URL from the response
+    const urlMatch = urlRaw.match(/https?:\/\/www\.bol\.com\/[^\s"'<>]+\/p\/[^\s"'<>]+/);
+    if (!urlMatch) {
+      console.log('[BOL GEMINI] Pass 1: No product page URL found in response, falling back.');
+      return null;
+    }
 
-Step 1: Use Google Search to find the exact bol.com product page. Search for: site:bol.com "${ean}"
-Step 2: The product page URL looks like https://www.bol.com/nl/nl/p/product-name/XXXXXXXX/ — it contains /p/ in the path. Do NOT use search result pages whose URL contains /s/ or searchtext=.
-Step 3: From the PRODUCT PAGE extract all fields below.
+    // Clean up the URL (remove trailing punctuation)
+    const productUrl = urlMatch[0].replace(/[.,;!?]+$/, '');
+    console.log('[BOL GEMINI] Pass 1: Found product URL:', productUrl);
 
-The title must be the actual product name shown as the h1 heading on the product page — NOT a search query, NOT a tab title, NOT a category name.
+    // ── PASS 2: Use urlContext to fetch the actual product page ─────────────
+    // urlContext fetches the real HTML content of the URL via Google's servers.
+    // This is the key WAF bypass — Google's IPs are not blocked by Akamai.
+    console.log('[BOL GEMINI] Pass 2: Fetching product page with urlContext...');
 
-Return ONLY a raw JSON object with no markdown fences, no explanation, no preamble:
+    const extractPrompt = `Fetch the page at this URL and extract product data: ${productUrl}
+
+Return ONLY a raw JSON object — no markdown, no explanation:
 {
-  "title": "actual product name from the h1 on the product page",
+  "title": "exact product name from the h1 heading on the page",
   "price": "price as digits only e.g. 14.99",
-  "shipping": "delivery message from the product page buybox e.g. Morgen in huis",
+  "shipping": "delivery message from the buybox e.g. Morgen in huis or Uiterlijk donderdag 22 mei",
   "description": "product description text, first 500 characters",
   "images": ["full image url 1", "full image url 2"],
   "bullets": ["product feature 1", "product feature 2"],
-  "productUrl": "full product page URL — must contain /p/ not /s/",
-  "liveVariations": "variant options if present, else empty string"
-}
-If you only found a search results page and no product page, return: {"error":"no_product_page_found"}`;
+  "productUrl": "${productUrl}",
+  "liveVariations": "variant options if any, else empty string"
+}`;
 
-    const response = await genai.models.generateContent({
+    const extractResponse = await genai.models.generateContent({
       model: 'gemini-2.0-flash',
-      contents: prompt,
+      contents: extractPrompt,
       config: {
-        tools: [{ googleSearch: {} }],
-        temperature: 0.1,
+        tools: [{ urlContext: {} }],
+        temperature: 0,
       }
     });
 
-    const rawText = response.text?.trim() || '';
-    console.log('[BOL GEMINI] Raw response length:', rawText.length);
+    const rawText = (extractResponse.text || '').trim();
+    console.log('[BOL GEMINI] Pass 2 raw response length:', rawText.length);
 
-    const jsonText = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+    // Strip markdown fences if present
+    const jsonText = rawText
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
 
-    // Validation helper: reject any result that looks like a search results page, not a product page.
-    // This catches Gemini returning "'8721398908038' in Alle artikelen" or similar.
-    const isSearchResultTitle = (title: string) => {
-      if (!title) return true;
+    // Validate the title is a real product name, not a search query or error
+    const isInvalidTitle = (title: string) => {
+      if (!title || title.length < 5) return true;
       const t = title.toLowerCase();
-      // Search result page patterns
-      if (t.includes('in alle artikelen')) return true;
-      if (t.includes('zoekresultaten')) return true;
-      if (/^['"]?\d{8,14}['"]?/.test(t)) return true; // starts with EAN digits
-      if (t.includes('resultaten voor')) return true;
-      if (t.includes('search results')) return true;
-      if (title.length < 5) return true;
-      return false;
+      return t.includes('in alle articles') ||
+             t.includes('zoekresultaten') ||
+             t.includes('search results') ||
+             t.includes('resultaten voor') ||
+             /^['"\s]*\d{8,14}['"\s]*$/.test(t); // pure EAN number
     };
 
-    let parsedResult: any = null;
+    let parsed: any = null;
     try {
-      parsedResult = JSON.parse(jsonText);
-    } catch (parseErr) {
-      // JSON parse failed on clean text — try extracting the first {...} block
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try { parsedResult = JSON.parse(jsonMatch[0]); } catch (_) {}
-      }
-      if (!parsedResult) {
-        console.log('[BOL GEMINI] JSON parse failed:', parseErr);
+      parsed = JSON.parse(jsonText);
+    } catch (_) {
+      // Try extracting JSON object from mixed response
+      const m = rawText.match(/\{[\s\S]*\}/);
+      if (m) {
+        try { parsed = JSON.parse(m[0]); } catch (_) {}
       }
     }
 
-    if (parsedResult) {
-      // Reject error sentinel
-      if (parsedResult.error === 'no_product_page_found') {
-        console.log('[BOL GEMINI] Gemini could not find a product page, falling back.');
-        return null;
-      }
-      // Reject search-result titles
-      if (parsedResult.title && isSearchResultTitle(parsedResult.title)) {
-        console.log('[BOL GEMINI] Rejected: title looks like a search result page:', parsedResult.title);
-        return null;
-      }
-      if (parsedResult.title) {
-        parsedResult._source = 'gemini-google-search';
-        return parsedResult;
-      }
+    if (parsed && parsed.title && !isInvalidTitle(parsed.title)) {
+      console.log('[BOL GEMINI] Pass 2 succeeded. Title:', parsed.title);
+      parsed._source = 'gemini-url-context';
+      parsed.productUrl = parsed.productUrl || productUrl;
+      return parsed;
     }
+
+    console.log('[BOL GEMINI] Pass 2 returned unusable data:', rawText.substring(0, 150));
+    return null;
+
   } catch (e: any) {
     console.log('[BOL GEMINI] Strategy failed:', e.message);
+    return null;
   }
-
-  return null;
 }
 
 // ── BOL STRATEGY 3: Playwright stealth browser (hardened backup) ─────────────
