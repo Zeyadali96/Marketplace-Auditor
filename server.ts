@@ -1021,7 +1021,7 @@ Extract and return a single, exact JSON object with the following schema:
 Make sure all details (pricing, title, shipping) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No conversational helper text, no markdown other than \`\`\`json.`;
 
     const response = await genai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
