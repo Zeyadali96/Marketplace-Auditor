@@ -127,7 +127,7 @@ app.post("/api/audit/amazon", async (req, res) => {
     const locConfig = amazonLocalizationMap[domain] || { locale: 'en-US', timezoneId: 'America/New_York', city: 'NYC', zip: '10001', currency: 'USD', deliverTo: ['Deliver to'] };
 
     const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
       viewport: { width: 1920, height: 1080 },
       locale: locConfig.locale,
       timezoneId: locConfig.timezoneId,
@@ -154,13 +154,31 @@ app.post("/api/audit/amazon", async (req, res) => {
 
     const page = await context.newPage();
     
-    await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (route) => {
-      route.abort();
+    await page.route('**/*', (route) => {
+      const url = route.request().url();
+      const resourceType = route.request().resourceType();
+      // Block images, fonts, stylesheets, media, and known tracking/analytics domains
+      if (['image', 'font', 'media'].includes(resourceType)) {
+        return route.abort();
+      }
+      if (resourceType === 'stylesheet' && !url.includes('amazon')) {
+        return route.abort();
+      }
+      const blockPatterns = [
+        'google-analytics', 'googletagmanager', 'doubleclick',
+        'facebook.net', 'fbcdn', 'adsystem', 'advertising-api',
+        'amazon-adsystem', 'fls-na.amazon', 'unagi.amazon',
+        'completion.amazon', 'aax-', 'mads.'
+      ];
+      if (blockPatterns.some(p => url.includes(p))) {
+        return route.abort();
+      }
+      return route.continue();
     });
 
     try {
       console.log(`Auditing Amazon ${asin} on ${domain} (Target Zip: ${locConfig.zip})...`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       
       try {
         const cookieButtons = ['#sp-cc-accept', 'input[name="accept"]', '#cookie-accept', '#accept-cookies', '.a-button-inner input[data-action="accept-cookies"]'];
@@ -181,75 +199,134 @@ app.post("/api/audit/amazon", async (req, res) => {
         }, { zip: locConfig.zip });
 
         if (isRegionalLocked) {
-          console.log(`UI Regional Unlock Fallback: Injecting ${locConfig.zip} for ${domain}`);
-          // Wait for first click option to be visible
-          const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { visible: true, timeout: 15000 }).catch(() => null);
+          console.log(`UI Regional Unlock: Injecting ${locConfig.zip} for ${domain} (country: ${locConfig.countryCode})`);
+          const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 10000 }).catch(() => null);
           if (locBtn) {
             await locBtn.click({ force: true });
-            await page.waitForTimeout(2000);
-
-            // 1. Check if Country Selection Dropdown is shown instead of Zip update input (e.g. from international proxy IP)
+            await page.waitForTimeout(1500);
+            // Step 1: Handle country dropdown if shown (data center IP is outside target country)
             const countryListSelector = '#GLUXCountryList';
             const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
             if (countryListVisible && locConfig.countryCode) {
-              console.log(`Country list dropdown detected inside Amazon location popover. Selecting: ${locConfig.countryCode}`);
-              await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
-              await page.waitForTimeout(1000);
-
-              // Click "Go" or "Apply" button for country selection
-              const goBtnSelector = 'input[aria-labelledby="GLUXCountryList-announce"], button[name="glowDoneButton"], #GLUXCountryList-announce + input, .a-popover-footer input';
-              await page.click(goBtnSelector, { force: true }).catch(() => null);
-              await page.waitForTimeout(3000);
-
-              // Reload or re-click to get zip code inputs visible!
-              console.log('Re-clicking global location slot after selecting country...');
-              await page.click('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { force: true }).catch(() => null);
-              await page.waitForTimeout(2000);
-            }
-
-            // 2. Now handle the standard zip/postcode input field!
-            const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="code"], input[name="zipCode"]';
-            const inputVisible = await page.waitForSelector(zipInputSelector, { state: 'visible', timeout: 15000 }).catch(() => null);
-            
-            if (inputVisible) {
-              await page.evaluate((sel) => {
-                const el = document.querySelector(sel) as HTMLInputElement;
-                if (el) {
-                  el.value = '';
-                  el.focus();
-                }
-              }, zipInputSelector);
-              
-              await page.type(zipInputSelector, locConfig.zip, { delay: 60 });
-              await page.keyboard.press('Enter');
-              
-              const applyBtn = '#GLUXZipUpdate input[type="submit"], #GLUXZipUpdate > span > input, #GLUXZipUpdate_Buttons input, #GLUXZipUpdate input.a-button-input, #GLUXZipUpdate_Buttons span.a-button-inner input';
-              await page.click(applyBtn).catch(() => null);
-              
-              // CRITICAL: Wait 1.5s for backend to register zip
-              await page.waitForTimeout(1500);
-              
-              const confirmBtn = '#GLUXConfirmClose, #GLUXConfirmResponse, input[data-action="GLUXConfirmResponse"], .a-popover-footer input, #GLUXConfirmClose input, #GLUXConfirmClose-announce, .a-popover-footer span.a-button-inner input, button[name="glowDoneButton"]';
-              const confirmBtnVisible = await page.waitForSelector(confirmBtn, { timeout: 8000 }).catch(() => null);
-              if (confirmBtnVisible) {
-                await page.click(confirmBtn).catch(() => null);
+              console.log(`Country dropdown detected. Selecting: ${locConfig.countryCode}`);
+              await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(async () => {
+                // Fallback: try selecting by label text
+                const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => opts.map(o => ({ value: o.value, text: o.textContent })));
+                console.log('Available countries:', JSON.stringify(options.slice(0, 5)));
+              });
+              await page.waitForTimeout(800);
+              // Click Apply/Done/Go button for country selection
+              const countryApplySelectors = [
+                '#GLUXCountryListDropdown .a-button-input',
+                'input[aria-labelledby="GLUXCountryList-announce"]',
+                '#GLUXCountryList-announce ~ input',
+                '.a-popover-footer input[type="submit"]',
+                '.a-popover-footer .a-button-input',
+                'button[name="glowDoneButton"]',
+                '#a-popover-1 .a-button-input',
+                '.a-popover-footer input'
+              ];
+              let countryApplied = false;
+              for (const sel of countryApplySelectors) {
+                try {
+                  const btn = await page.$(sel);
+                  if (btn && await btn.isVisible()) {
+                    await btn.click({ force: true });
+                    countryApplied = true;
+                    console.log(`Country applied via: ${sel}`);
+                    break;
+                  }
+                } catch (_) {}
               }
-              
-              await page.waitForTimeout(1500);
-              
-              // FORCE REFRESH/RELOAD to ensure the new delivery address is applied and price/shipping times are updated
-              console.log(`Reloading page for ${domain} after location zip code unlock...`);
-              await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+              if (!countryApplied) {
+                // Last resort: press Enter
+                await page.keyboard.press('Enter').catch(() => null);
+              }
+              // Wait for page to process country change (may cause redirect/reload)
+              await page.waitForTimeout(2000);
+              await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+              // Re-open location popover for zip code entry
+              console.log('Re-opening location popover for zip code entry...');
+              const locBtn2 = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 8000 }).catch(() => null);
+              if (locBtn2) {
+                await locBtn2.click({ force: true });
+                await page.waitForTimeout(1500);
+              }
+            }
+            // Step 2: Enter zip/postcode
+            const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="postcode"], input[aria-label*="code"], input[name="zipCode"]';
+            const inputVisible = await page.waitForSelector(zipInputSelector, { state: 'visible', timeout: 8000 }).catch(() => null);
+            if (inputVisible) {
+              // Clear and type zip
+              await inputVisible.click({ clickCount: 3 }).catch(() => null);
+              await page.keyboard.press('Backspace').catch(() => null);
+              await inputVisible.fill('');
+              await inputVisible.type(locConfig.zip, { delay: 50 });
+              // Click Apply button
+              const applySelectors = [
+                '#GLUXZipUpdate input[type="submit"]',
+                '#GLUXZipUpdate .a-button-input',
+                '#GLUXZipUpdate > span > input',
+                '#GLUXZipUpdate_Buttons input',
+                '#GLUXZipUpdate_Buttons span.a-button-inner input'
+              ];
+              let applied = false;
+              for (const sel of applySelectors) {
+                try {
+                  const btn = await page.$(sel);
+                  if (btn && await btn.isVisible()) {
+                    await btn.click({ force: true });
+                    applied = true;
+                    break;
+                  }
+                } catch (_) {}
+              }
+              if (!applied) {
+                await page.keyboard.press('Enter').catch(() => null);
+              }
+              await page.waitForTimeout(1200);
+              // Click confirm/done if shown
+              const confirmSelectors = [
+                '#GLUXConfirmClose input',
+                '#GLUXConfirmClose .a-button-input',
+                'input[data-action="GLUXConfirmResponse"]',
+                '#GLUXConfirmClose-announce',
+                'button[name="glowDoneButton"]',
+                '.a-popover-footer .a-button-input'
+              ];
+              for (const sel of confirmSelectors) {
+                try {
+                  const btn = await page.$(sel);
+                  if (btn && await btn.isVisible()) {
+                    await btn.click({ force: true });
+                    console.log(`Confirmed via: ${sel}`);
+                    break;
+                  }
+                } catch (_) {}
+              }
+              await page.waitForTimeout(800);
+              // Reload to apply the new delivery address
+              console.log(`Reloading ${domain} after location injection...`);
+              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
             } else {
-              console.warn("Zip input popover never appeared.");
+              console.warn('Zip input never appeared. Location may not be set correctly.');
+              // Try reloading anyway — cookies may have taken effect
+              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
             }
           }
+          // Verify location was set
+          await page.waitForTimeout(800);
+          const finalLocText = await page.evaluate(() => {
+            const slot = document.querySelector('#nav-global-location-slot');
+            return slot ? slot.textContent?.replace(/\s+/g, ' ').trim() : '';
+          }).catch(() => '');
+          console.log(`Location slot after injection: "${finalLocText}"`);
         }
       } catch (err: any) {
         console.warn("Location UI injection skipped or failed:", err.message);
       }
 
-      await page.waitForLoadState('domcontentloaded', { timeout: 20000 }).catch(() => null);
+      await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
     } catch (e: any) {
       console.error("Navigation error:", e.message);
     }
