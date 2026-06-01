@@ -203,18 +203,32 @@ app.post("/api/audit/amazon", async (req, res) => {
           const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 10000 }).catch(() => null);
           if (locBtn) {
             await locBtn.click({ force: true });
-            await page.waitForTimeout(1500);
+            
+            // Wait for either the country list or ZIP input to be loaded and visible in the popover
+            const popoverSelector = '#GLUXCountryList, #GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="postcode"]';
+            await page.waitForSelector(popoverSelector, { state: 'visible', timeout: 8000 }).catch(() => null);
+            await page.waitForTimeout(1000);
+
             // Step 1: Handle country dropdown if shown (data center IP is outside target country)
             const countryListSelector = '#GLUXCountryList';
             const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
             if (countryListVisible && locConfig.countryCode) {
               console.log(`Country dropdown detected. Selecting: ${locConfig.countryCode}`);
               await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(async () => {
-                // Fallback: try selecting by label text
-                const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => opts.map(o => ({ value: o.value, text: o.textContent })));
-                console.log('Available countries:', JSON.stringify(options.slice(0, 5)));
+                // Fallback: try matching lowercase prefix or option text
+                const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => opts.map(o => ({ value: o.value, text: o.textContent?.trim() })));
+                const bestOption = options.find(o => 
+                  o.value?.toUpperCase() === locConfig.countryCode?.toUpperCase() ||
+                  o.value?.toLowerCase() === locConfig.countryCode?.toLowerCase() ||
+                  o.text?.toLowerCase().includes(locConfig.city?.toLowerCase() || '') ||
+                  o.text?.toLowerCase().includes(locConfig.locale?.split('-')[1]?.toLowerCase() || '')
+                );
+                if (bestOption) {
+                  await page.selectOption(countryListSelector, { value: bestOption.value }).catch(() => null);
+                }
               });
               await page.waitForTimeout(800);
+              
               // Click Apply/Done/Go button for country selection
               const countryApplySelectors = [
                 '#GLUXCountryListDropdown .a-button-input',
@@ -231,32 +245,43 @@ app.post("/api/audit/amazon", async (req, res) => {
                 try {
                   const btn = await page.$(sel);
                   if (btn && await btn.isVisible()) {
-                    await btn.click({ force: true });
+                    console.log(`Clicking country apply via: ${sel}`);
+                    await Promise.all([
+                      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 6000 }).catch(() => null),
+                      btn.click({ force: true })
+                    ]);
                     countryApplied = true;
-                    console.log(`Country applied via: ${sel}`);
                     break;
                   }
                 } catch (_) {}
               }
               if (!countryApplied) {
                 // Last resort: press Enter
-                await page.keyboard.press('Enter').catch(() => null);
+                console.log('No country apply button found, pressing Enter...');
+                await Promise.all([
+                  page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 6000 }).catch(() => null),
+                  page.keyboard.press('Enter')
+                ]).catch(() => null);
               }
               // Wait for page to process country change (may cause redirect/reload)
-              await page.waitForTimeout(2000);
-              await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+              await page.waitForTimeout(1500);
+              await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => null);
+              
               // Re-open location popover for zip code entry
               console.log('Re-opening location popover for zip code entry...');
               const locBtn2 = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 8000 }).catch(() => null);
               if (locBtn2) {
                 await locBtn2.click({ force: true });
-                await page.waitForTimeout(1500);
+                await page.waitForSelector('#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="postcode"]', { state: 'visible', timeout: 8000 }).catch(() => null);
+                await page.waitForTimeout(1000);
               }
             }
+            
             // Step 2: Enter zip/postcode
             const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="postcode"], input[aria-label*="code"], input[name="zipCode"]';
             const inputVisible = await page.waitForSelector(zipInputSelector, { state: 'visible', timeout: 8000 }).catch(() => null);
             if (inputVisible) {
+              console.log(`ZIP input is visible. Typing postcode: ${locConfig.zip}`);
               // Clear and type zip
               await inputVisible.click({ clickCount: 3 }).catch(() => null);
               await page.keyboard.press('Backspace').catch(() => null);
@@ -268,7 +293,8 @@ app.post("/api/audit/amazon", async (req, res) => {
                 '#GLUXZipUpdate .a-button-input',
                 '#GLUXZipUpdate > span > input',
                 '#GLUXZipUpdate_Buttons input',
-                '#GLUXZipUpdate_Buttons span.a-button-inner input'
+                '#GLUXZipUpdate_Buttons span.a-button-inner input',
+                '#GLUXZipUpdate-announce + input'
               ];
               let applied = false;
               for (const sel of applySelectors) {
@@ -299,12 +325,12 @@ app.post("/api/audit/amazon", async (req, res) => {
                   const btn = await page.$(sel);
                   if (btn && await btn.isVisible()) {
                     await btn.click({ force: true });
-                    console.log(`Confirmed via: ${sel}`);
+                    console.log(`Confirmed ZIP via: ${sel}`);
                     break;
                   }
                 } catch (_) {}
               }
-              await page.waitForTimeout(800);
+              await page.waitForTimeout(1000);
               // Reload to apply the new delivery address
               console.log(`Reloading ${domain} after location injection...`);
               await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
@@ -917,8 +943,8 @@ app.post("/api/audit/amazon", async (req, res) => {
         }
         else {
           // ── Date-based calculation (existing logic, unchanged) ─────────────────
-          const dayMatch = rawShippingTime.match(/(\d{1,2})(?:\.?\s*(?:de|di|d')?\s*)(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|wrze|paź|listopad|grudzień|styczeń|luty|kwiecień|maj|maj|maj|czerwiec|lipiec|sierpień|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)/i) ||
-                           rawShippingTime.match(/(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|maj|mai|maj|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)(?:\s*(?:de|di)?\s*)(\d{1,2})/i);
+          const dayMatch = rawShippingTime.match(/(\d{1,2})(?:\.?\s*(?:de|di|d')?\s*)(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|wrze|paź|listopad|grudzień|styczeń|luty|kwiecień|maj|maj|maj|czerwiec|czerwca|lipiec|sierpień|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)/i) ||
+                           rawShippingTime.match(/(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|maj|mai|maj|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|czerwiec|czerwca|lipca|sierpnia|września|października|listopada|grudnia)(?:\s*(?:de|di)?\s*)(\d{1,2})/i);
 
           let targetDate: Date | null = null;
 
