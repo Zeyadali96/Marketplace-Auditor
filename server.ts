@@ -195,125 +195,229 @@ app.post("/api/audit/amazon", async (req, res) => {
         const isRegionalLocked = await page.evaluate(({ zip }) => {
           const slot = document.querySelector('#nav-global-location-slot');
           if (!slot) return true;
-          return !slot.textContent?.includes(zip);
+          const text = slot.textContent || '';
+          const zipFirstPart = zip.split(/[\s-]+/)[0];
+          return !text.toLowerCase().includes(zip.toLowerCase()) && !text.toLowerCase().includes(zipFirstPart.toLowerCase());
         }, { zip: locConfig.zip });
 
         if (isRegionalLocked) {
           console.log(`UI Regional Unlock: Injecting ${locConfig.zip} for ${domain} (country: ${locConfig.countryCode})`);
+          
           const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 10000 }).catch(() => null);
+          let popoverOpened = false;
+          
           if (locBtn) {
-            await locBtn.click({ force: true });
-            await page.waitForTimeout(1500);
-            // Step 1: Handle country dropdown if shown (data center IP is outside target country)
-            const countryListSelector = '#GLUXCountryList';
-            const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
-            if (countryListVisible && locConfig.countryCode) {
-              console.log(`Country dropdown detected. Selecting: ${locConfig.countryCode}`);
-              await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(async () => {
-                // Fallback: try selecting by label text
-                const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => opts.map(o => ({ value: o.value, text: o.textContent })));
-                console.log('Available countries:', JSON.stringify(options.slice(0, 5)));
-              });
-              await page.waitForTimeout(800);
-              // Click Apply/Done/Go button for country selection
-              const countryApplySelectors = [
-                '#GLUXCountryListDropdown .a-button-input',
-                'input[aria-labelledby="GLUXCountryList-announce"]',
-                '#GLUXCountryList-announce ~ input',
-                '.a-popover-footer input[type="submit"]',
-                '.a-popover-footer .a-button-input',
-                'button[name="glowDoneButton"]',
-                '#a-popover-1 .a-button-input',
-                '.a-popover-footer input'
-              ];
-              let countryApplied = false;
-              for (const sel of countryApplySelectors) {
-                try {
-                  const btn = await page.$(sel);
-                  if (btn && await btn.isVisible()) {
-                    await btn.click({ force: true });
-                    countryApplied = true;
-                    console.log(`Country applied via: ${sel}`);
-                    break;
-                  }
-                } catch (_) {}
+            for (let clickAttempt = 1; clickAttempt <= 3; clickAttempt++) {
+              console.log(`Clicking location button (attempt ${clickAttempt})...`);
+              await locBtn.click({ force: true }).catch(() => null);
+              await page.waitForTimeout(1500);
+              const isVisible = await page.locator('.a-popover-modal, .a-popover, #GLUXZipUpdateInput, #GLUXCountryList').isVisible().catch(() => false);
+              if (isVisible) {
+                popoverOpened = true;
+                break;
               }
-              if (!countryApplied) {
-                // Last resort: press Enter
-                await page.keyboard.press('Enter').catch(() => null);
-              }
-              // Wait for page to process country change (may cause redirect/reload)
-              await page.waitForTimeout(2000);
-              await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
-              // Re-open location popover for zip code entry
-              console.log('Re-opening location popover for zip code entry...');
-              const locBtn2 = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 8000 }).catch(() => null);
-              if (locBtn2) {
-                await locBtn2.click({ force: true });
-                await page.waitForTimeout(1500);
-              }
-            }
-            // Step 2: Enter zip/postcode
-            const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="postcode"], input[aria-label*="code"], input[name="zipCode"]';
-            const inputVisible = await page.waitForSelector(zipInputSelector, { state: 'visible', timeout: 8000 }).catch(() => null);
-            if (inputVisible) {
-              // Clear and type zip
-              await inputVisible.click({ clickCount: 3 }).catch(() => null);
-              await page.keyboard.press('Backspace').catch(() => null);
-              await inputVisible.fill('');
-              await inputVisible.type(locConfig.zip, { delay: 50 });
-              // Click Apply button
-              const applySelectors = [
-                '#GLUXZipUpdate input[type="submit"]',
-                '#GLUXZipUpdate .a-button-input',
-                '#GLUXZipUpdate > span > input',
-                '#GLUXZipUpdate_Buttons input',
-                '#GLUXZipUpdate_Buttons span.a-button-inner input'
-              ];
-              let applied = false;
-              for (const sel of applySelectors) {
-                try {
-                  const btn = await page.$(sel);
-                  if (btn && await btn.isVisible()) {
-                    await btn.click({ force: true });
-                    applied = true;
-                    break;
-                  }
-                } catch (_) {}
-              }
-              if (!applied) {
-                await page.keyboard.press('Enter').catch(() => null);
-              }
-              await page.waitForTimeout(1200);
-              // Click confirm/done if shown
-              const confirmSelectors = [
-                '#GLUXConfirmClose input',
-                '#GLUXConfirmClose .a-button-input',
-                'input[data-action="GLUXConfirmResponse"]',
-                '#GLUXConfirmClose-announce',
-                'button[name="glowDoneButton"]',
-                '.a-popover-footer .a-button-input'
-              ];
-              for (const sel of confirmSelectors) {
-                try {
-                  const btn = await page.$(sel);
-                  if (btn && await btn.isVisible()) {
-                    await btn.click({ force: true });
-                    console.log(`Confirmed via: ${sel}`);
-                    break;
-                  }
-                } catch (_) {}
-              }
-              await page.waitForTimeout(800);
-              // Reload to apply the new delivery address
-              console.log(`Reloading ${domain} after location injection...`);
-              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-            } else {
-              console.warn('Zip input never appeared. Location may not be set correctly.');
-              // Try reloading anyway — cookies may have taken effect
-              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
             }
           }
+
+          if (popoverOpened) {
+            const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="postcode"], input[aria-label*="code"], input[name="zipCode"]';
+            const countryListSelector = '#GLUXCountryList';
+            
+            // Wait for either Zip input or Country list dropdown
+            await page.waitForSelector(`${zipInputSelector}, ${countryListSelector}`, { state: 'visible', timeout: 5000 }).catch(() => null);
+            
+            let zipInput = await page.$(zipInputSelector);
+            let zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
+            
+            if (!zipVisible) {
+              console.log('Zip input not immediately visible, handling country select or list fallback...');
+              const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
+              
+              if (countryListVisible && locConfig.countryCode) {
+                console.log(`Country dropdown detected. Attempting to select country: ${locConfig.countryCode}`);
+                
+                let selectedVal = null;
+                try {
+                  const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => 
+                    opts.map(o => ({ value: o.value, text: o.textContent?.trim() || "" }))
+                  );
+                  const targetCode = locConfig.countryCode.toLowerCase();
+                  // Try to find by value match
+                  const matchByVal = options.find(o => o.value.toLowerCase() === targetCode);
+                  if (matchByVal) {
+                    selectedVal = matchByVal.value;
+                  } else {
+                    const countryNamesMap: Record<string, string[]> = {
+                      'GB': ['united kingdom', 'royaume-uni', 'vereinigt', 'regno unito', 'reino unido', 'wielka brytania', 'storbritannien', 'england'],
+                      'FR': ['france', 'frankreich', 'francia'],
+                      'DE': ['germany', 'deutschland', 'allemagne', 'germania', 'niemcy', 'tyskland'],
+                      'IT': ['italy', 'itálie', 'italie', 'italien', 'italia', 'włochy'],
+                      'ES': ['spain', 'spanien', 'espagne', 'spagna', 'españa', 'hiszpania'],
+                      'PL': ['poland', 'polen', 'pologne', 'polonia', 'polska'],
+                      'NL': ['netherlands', 'niederlande', 'pays-bas', 'paesi bassi', 'países bajos', 'holandia', 'nederländerna', 'nederland'],
+                      'SE': ['sweden', 'schweden', 'suède', 'svezia', 'suecia', 'szwecja', 'sverige']
+                    };
+                    const names = countryNamesMap[locConfig.countryCode] || [];
+                    const matchByName = options.find(o => {
+                      const txt = o.text.toLowerCase();
+                      return names.some(n => txt.includes(n));
+                    });
+                    if (matchByName) {
+                      selectedVal = matchByName.value;
+                    }
+                  }
+                } catch (e: any) {
+                  console.warn("Failed to read country options:", e.message);
+                }
+                
+                if (selectedVal) {
+                  console.log(`Selecting country option: ${selectedVal}`);
+                  await page.selectOption(countryListSelector, { value: selectedVal }).catch(() => null);
+                } else {
+                  console.log(`Fallback selecting country code: ${locConfig.countryCode}`);
+                  await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
+                }
+                
+                await page.waitForTimeout(1000);
+                
+                // Click Apply/Done/Go button for country selection
+                const countryApplySelectors = [
+                  '#GLUXCountryListDropdown .a-button-input',
+                  'input[aria-labelledby="GLUXCountryList-announce"]',
+                  '#GLUXCountryList-announce ~ input',
+                  '.a-popover-footer input[type="submit"]',
+                  '.a-popover-footer .a-button-input',
+                  'button[name="glowDoneButton"]',
+                  '#a-popover-1 .a-button-input',
+                  '.a-popover-footer input'
+                ];
+                let countryApplied = false;
+                for (const sel of countryApplySelectors) {
+                  try {
+                    const btn = await page.$(sel);
+                    if (btn && await btn.isVisible()) {
+                      await btn.click({ force: true });
+                      countryApplied = true;
+                      console.log(`Country applied via: ${sel}`);
+                      break;
+                    }
+                  } catch (_) {}
+                }
+                if (!countryApplied) {
+                  await page.keyboard.press('Enter').catch(() => null);
+                }
+                
+                // Wait for reload or DOM change
+                await page.waitForTimeout(2500);
+                await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+                
+                // Try to dismiss overlays if any
+                try {
+                  const dismissBtn = await page.$('button[name="glowDoneButton"], #GLUXConfirmClose input');
+                  if (dismissBtn && await dismissBtn.isVisible()) {
+                    await dismissBtn.click({ force: true });
+                    await page.waitForTimeout(1000);
+                  }
+                } catch (_) {}
+
+                // Re-open location popover for ZIP entry
+                console.log('Re-opening location popover for ZIP entry...');
+                let locBtn2 = null;
+                for (let clickAttempt2 = 1; clickAttempt2 <= 3; clickAttempt2++) {
+                  locBtn2 = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 5000 }).catch(() => null);
+                  if (locBtn2) {
+                    await locBtn2.click({ force: true }).catch(() => null);
+                    await page.waitForTimeout(1500);
+                    const checkZip = await page.$(zipInputSelector);
+                    if (checkZip && await checkZip.isVisible()) {
+                      zipInput = checkZip;
+                      zipVisible = true;
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+
+            if (zipInput || zipVisible) {
+              if (!zipInput) {
+                zipInput = await page.$(zipInputSelector);
+              }
+              if (zipInput) {
+                console.log(`Entering zip code/postcode: "${locConfig.zip}"`);
+                await zipInput.click({ clickCount: 3 }).catch(() => null);
+                await page.keyboard.press('Backspace').catch(() => null);
+                await zipInput.fill('');
+                await zipInput.type(locConfig.zip, { delay: 50 });
+                await page.waitForTimeout(500);
+                
+                // Click Apply button
+                const applySelectors = [
+                  '#GLUXZipUpdate input[type="submit"]',
+                  '#GLUXZipUpdate .a-button-input',
+                  '#GLUXZipUpdate > span > input',
+                  '#GLUXZipUpdate_Buttons input',
+                  '#GLUXZipUpdate_Buttons span.a-button-inner input',
+                  '#GLUXZipUpdate input',
+                  'input[aria-labelledby="GLUXZipUpdate-announce"]'
+                ];
+                let applied = false;
+                for (const sel of applySelectors) {
+                  try {
+                    const btn = await page.$(sel);
+                    if (btn && await btn.isVisible()) {
+                      await btn.click({ force: true });
+                      applied = true;
+                      console.log(`Apply clicked via: ${sel}`);
+                      break;
+                    }
+                  } catch (_) {}
+                }
+                if (!applied) {
+                  await page.keyboard.press('Enter').catch(() => null);
+                }
+                
+                await page.waitForTimeout(2000);
+                
+                // Click confirm/done if shown
+                const confirmSelectors = [
+                  '#GLUXConfirmClose input',
+                  '#GLUXConfirmClose .a-button-input',
+                  'input[data-action="GLUXConfirmResponse"]',
+                  '#GLUXConfirmClose-announce',
+                  'button[name="glowDoneButton"]',
+                  '.a-popover-footer .a-button-input',
+                  '.a-popover-footer input',
+                  'button:has-text("Done")',
+                  'button:has-text("Confirm")',
+                  'button:has-text("Continue")',
+                  'input[type="button"]:has-text("Done")',
+                  'span.a-button:has-text("Done") input',
+                  'span.a-button:has-text("Continue") input'
+                ];
+                for (const sel of confirmSelectors) {
+                  try {
+                    const btn = await page.$(sel);
+                    if (btn && await btn.isVisible()) {
+                      await btn.click({ force: true });
+                      console.log(`Confirmed done button via: ${sel}`);
+                      break;
+                    }
+                  } catch (_) {}
+                }
+                await page.waitForTimeout(1500);
+                
+                // Reload to apply the new delivery address
+                console.log(`Reloading ${domain} after location injection to apply ZIP change...`);
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+              }
+            } else {
+              console.warn('Zip input never appeared or became visible.');
+            }
+          } else {
+            console.warn('Popover never opened.');
+          }
+          
           // Verify location was set
           await page.waitForTimeout(800);
           const finalLocText = await page.evaluate(() => {
@@ -327,6 +431,39 @@ app.post("/api/audit/amazon", async (req, res) => {
       }
 
       await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+
+      // Ensure "One-Time Purchase" option is selected if "Subscribe & Save" is default on the page
+      try {
+        const oneTimeSelectors = [
+          '#newAccordionRow_header',
+          '#newAccordionRow',
+          '#oneTimeBuyBox_feature_div',
+          '#buyNewSection_header',
+          '#oneTimeBuyBox',
+          '#buyBoxAccordion .a-accordion-row:not(#subscribeAndSaveAccordionRow) .a-accordion-header',
+          '#buyBoxAccordion div[id*="oneTime"]',
+          'div[id*="oneTimeBuyBox"]',
+          '.oneTimeBuyBox',
+          'input[id*="oneTime"]'
+        ];
+        for (const selector of oneTimeSelectors) {
+          const btn = await page.$(selector);
+          if (btn && await btn.isVisible()) {
+            const isSelected = await page.evaluate((el: any) => {
+              return el.classList.contains('a-accordion-row-active') || el.classList.contains('active') || !!el.querySelector('.a-accordion-row-active');
+            }, btn).catch(() => false);
+            
+            if (!isSelected) {
+              console.log(`Clicking One-Time Purchase header/accordion via: ${selector}`);
+              await btn.click({ force: true });
+              await page.waitForTimeout(1500);
+            }
+            break;
+          }
+        }
+      } catch (err: any) {
+        console.warn("Could not click One-Time Purchase accordion:", err.message);
+      }
     } catch (e: any) {
       console.error("Navigation error:", e.message);
     }
@@ -565,79 +702,219 @@ app.post("/api/audit/amazon", async (req, res) => {
       }
     }
 
-    // Clean up trailing/leading garbage from punctuation if split
-    rawShippingTime = rawShippingTime
-      .replace(/^[\s,.;:or|]+|[\s,.;:or|]+$/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+    // Inlined helper function for precise and language-aware shipping text extraction and cleaning
+    const cleanShippingText = (text: string): string => {
+      if (!text) return "";
+      
+      // 1. Deduplicate sentences/phrases to handle DOM-level repetition (ideal for FR "Livraison GRATUITE..." repeats)
+      const segments = text.split(/\s*[\.\!\?]+\s*/).map(s => s.trim()).filter(s => s.length > 0);
+      const uniqueSegments: string[] = [];
+      for (const seg of segments) {
+        if (!uniqueSegments.some(us => us.toLowerCase() === seg.toLowerCase() || seg.toLowerCase().includes(us.toLowerCase()) || us.toLowerCase().includes(seg.toLowerCase()))) {
+          uniqueSegments.push(seg);
+        }
+      }
+      let cleaned = uniqueSegments.join('. ').trim();
+
+      // 2. Remove localized free-delivery / marketing prefixes
+      const prefixesToRemove = [
+        /free\s+(?:delivery|shipping)\s*/gi,
+        /gratis-lieferung\s*(?:am|von)?\s*/gi,
+        /kostenlose\s+lieferung\s*(?:am|von)?\s*/gi,
+        /gratis\s+versand\s*/gi,
+        /kostenloser\s+versand\s*/gi,
+        /gratisversand\s*/gi,
+        /livraison\s+gratuite\s*(?:le)?\s*/gi,
+        /consegna\s+gratuita\s*(?:il)?\s*/gi,
+        /spedizione\s+gratuita\s*(?:il)?\s*/gi,
+        /entrega\s+gratuita\s*/gi,
+        /envío\s+gratis\s*(?:el)?\s*/gi,
+        /envio\s+gratis\s*/gi,
+        /entrega\s+gratis\s*/gi,
+        /gratis\s+bezorging\s*(?:op)?\s*/gi,
+        /gratis\s+verzending\s*/gi,
+        /darmowa\s+dostawa\s*(?:w)?\s*/gi,
+        /bezpłatna\s+dostawa\s*/gi,
+        /bezplatna\s+dostawa\s*/gi,
+        /gratis\s+leverans\s*/gi,
+        /fri\s+frakt\s*/gi,
+        /delivery\s*(?:on|by)?\s*/gi,
+        /consegna\s*(?:entro)?\s*/gi,
+        /entrega\s*(?:el)?\s*/gi,
+        /dostawa\s*(?:w)?\s*/gi,
+        /u\s+wyszukiwarki\s*/gi,
+        /vandaag\s+bezorgd/gi,
+        /aujourd'hui/gi
+      ];
+      for (const rx of prefixesToRemove) {
+        cleaned = cleaned.replace(rx, '');
+      }
+
+      // 3. Remove localized suffixes / marketing qualifiers (such as first order qualifiers)
+      const suffixesToRemove = [
+        /\s*przy\s+pierwszym\s+zamówieniu.*/gi,
+        /\s*przy\s+pierwszym\s+zakupie.*/gi,
+        /\s*avec\s+(?:votre\s+)?première\s+commande.*/gi,
+        /\s*lors\s+de\s+(?:votre\s+)?première\s+commande.*/gi,
+        /\s*bei\s+(?:der\s+)?ersten\s+bestellung.*/gi,
+        /\s*per\s+il\s+primo\s+ordine.*/gi,
+        /\s*en\s+tu\s+primer\s+pedido.*/gi,
+        /\s*voor\s+(?:uw\s+)?eerste\s+bestelling.*/gi,
+        /\s*on\s+your\s+first\s+order.*/gi,
+        /\s*\(.*subscription.*\)/gi,
+        /\s*\(.*prime member.*\)/gi,
+        /\s*or\s+faster.*/gi,
+        /\.?\s*Détails.*/gi,
+        /\.?\s*Details.*/gi,
+        /\.?\s*Informations?.*/gi,
+        /\s+ze\s+szczegółami.*/gi,
+        /\s*więcej\s+informacji.*/gi,
+        /mehr\s+details.*/gi
+      ];
+      for (const rx of suffixesToRemove) {
+        cleaned = cleaned.replace(rx, '');
+      }
+
+      // 4. Strip leading language particles and prepositions safely
+      cleaned = cleaned
+        .replace(/^(?:le|la|el|los|on|op|am|op|przy|w|v|at|by|from|auf|de|di|d'|el)\s+/gi, '')
+        .trim();
+
+      // 5. Trim residual punctuation and clean whitespace
+      cleaned = cleaned
+        .replace(/^[\s,.;:or|]+|[\s,.;:or|]+$/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      return cleaned;
+    };
+
+    const cleanedShipping = cleanShippingText(rawShippingTime);
+    if (cleanedShipping) {
+      rawShippingTime = cleanedShipping;
+    } else {
+      // Clean up trailing/leading garbage from punctuation if fallback
+      rawShippingTime = rawShippingTime
+        .replace(/^[\s,.;:or|]+|[\s,.;:or|]+$/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
 
     let amazonDesc = $('#productDescription').text().trim();
     if (!amazonDesc) amazonDesc = $('#feature-bullets').text().trim();
     
     const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
-    // --- 3. Buybox Owner Extraction (Modern tabular design first) ---
-    let amazonBuyboxOwner = buyBoxContext.find('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[tabular-attribute-name="Verzonden en verkocht door"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[tabular-attribute-name="Dispatched from and sold by"] .tabular-buybox-text').first().text().trim() ||
-                            buyBoxContext.find('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
-                            buyBoxContext.find('#sellerProfileTriggerId').first().text().trim() ||
-                            buyBoxContext.find('#merchant-info a').first().text().trim() ||
-                            $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
-                            $('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
-                            $('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
-                            $('div[tabular-attribute-name="Verzonden en verkocht door"] .tabular-buybox-text').first().text().trim() ||
-                            $('div[tabular-attribute-name="Dispatched from and sold by"] .tabular-buybox-text').first().text().trim() ||
-                            $('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
-                            $('#sellerProfileTriggerId').first().text().trim() ||
-                            $('#merchant-info a').first().text().trim();
+    // --- 3. Buybox Owner Extraction (Tiered Priority Resolver) ---
+    let amazonBuyboxOwner = "";
 
+    // Helper to find parent buybox container excluding subscribe & save accordion
+    let mainMerchantEl: any = null;
+    const merchantEls = $('#merchant-info');
+    merchantEls.each((_, el) => {
+      if ($(el).closest('#subscribeAndSaveAccordionRow, [class*="sns"], [id*="sns"]').length === 0) {
+        mainMerchantEl = $(el);
+        return false; // break
+      }
+    });
+    if (!mainMerchantEl && merchantEls.length > 0) {
+      mainMerchantEl = merchantEls.first();
+    }
+    const mainMerchantText = mainMerchantEl ? mainMerchantEl.text().replace(/\s+/g, ' ').trim() : "";
+    
+    // Check for tabular attributes in the buybox context, excluding SNS
+    let soldByTabular = "";
+    const soldByTabularEls = buyBoxContext.find('div[tabular-attribute-name*="Sold by" i] .tabular-buybox-text, div[tabular-attribute-name*="Verkauf durch" i] .tabular-buybox-text, div[tabular-attribute-name*="Vendido por" i] .tabular-buybox-text, div[tabular-attribute-name*="Vendu par" i] .tabular-buybox-text, div[tabular-attribute-name*="Sprzedawca" i] .tabular-buybox-text, div[tabular-attribute-name*="Säljs av" i] .tabular-buybox-text');
+    soldByTabularEls.each((_, el) => {
+      if ($(el).closest('#subscribeAndSaveAccordionRow, [class*="sns"], [id*="sns"]').length === 0) {
+        soldByTabular = $(el).text().trim();
+        return false;
+      }
+    });
+    if (!soldByTabular && soldByTabularEls.length > 0) {
+      soldByTabular = soldByTabularEls.first().text().trim();
+    }
+
+    let dispatchedByTabular = "";
+    const dispatchedByTabularEls = buyBoxContext.find('div[tabular-attribute-name*="Dispatched" i] .tabular-buybox-text, div[tabular-attribute-name*="Verzonden" i] .tabular-buybox-text, div[tabular-attribute-name*="Shipped" i] .tabular-buybox-text, div[tabular-attribute-name*="Expédié" i] .tabular-buybox-text, div[tabular-attribute-name*="Invia" i] .tabular-buybox-text, div[tabular-attribute-name*="Wysyłka" i] .tabular-buybox-text, div[tabular-attribute-name*="Skickas från" i] .tabular-buybox-text');
+    dispatchedByTabularEls.each((_, el) => {
+      if ($(el).closest('#subscribeAndSaveAccordionRow, [class*="sns"], [id*="sns"]').length === 0) {
+        dispatchedByTabular = $(el).text().trim();
+        return false;
+      }
+    });
+    if (!dispatchedByTabular && dispatchedByTabularEls.length > 0) {
+      dispatchedByTabular = dispatchedByTabularEls.first().text().trim();
+    }
+
+    // Check if Amazon itself is the seller based on merchant info or tabular Sold by attributes
+    const isAmazonSeller = 
+      /sold by amazon/i.test(mainMerchantText) ||
+      /dispatched from and sold by amazon/i.test(mainMerchantText) ||
+      /vendu par amazon/i.test(mainMerchantText) ||
+      /verkauf durch amazon/i.test(mainMerchantText) ||
+      /verzonden en verkocht door amazon/i.test(mainMerchantText) ||
+      /spedito da e venduto da amazon/i.test(mainMerchantText) ||
+      /vendido por amazon/i.test(mainMerchantText) ||
+      /verkauft von amazon/i.test(mainMerchantText) ||
+      /sprzedawane przez amazon/i.test(mainMerchantText) ||
+      /säljs av amazon/i.test(mainMerchantText) ||
+      /amazon/i.test(soldByTabular);
+
+    if (isAmazonSeller) {
+      amazonBuyboxOwner = "Amazon";
+    }
+
+    // Priority 2: Scopes to buyBoxContext tabular displays or trigger links, excluding SNS
     if (!amazonBuyboxOwner) {
-      // Get merchant-info text scoped to buybox first, then global fallback
-      const merchantInfoEl = buyBoxContext.find('#merchant-info').first();
-      const mInfoRaw = merchantInfoEl.text() || $('#merchant-info').first().text();
-      const mInfo = mInfoRaw.toLowerCase();
-
-      // FIXED: Only treat as Amazon-sold when Amazon is explicitly the SELLER,
-      // not just the dispatcher. FBA sellers dispatch from Amazon but are NOT Amazon.
-      // Exact phrases that mean Amazon itself holds the buybox:
-      const amazonIsSeller =
-        /\bsold by amazon\b/i.test(mInfoRaw) ||
-        /\bdispatched from and sold by amazon\b/i.test(mInfoRaw) ||
-        /\bverkauf durch amazon\b/i.test(mInfoRaw) ||
-        /\bexpédié et vendu par amazon\b/i.test(mInfoRaw) ||
-        /\bverzonden en verkocht door amazon\b/i.test(mInfoRaw) ||
-        /\bspedito da e venduto da amazon\b/i.test(mInfoRaw) ||
-        /\bvendido por amazon\b/i.test(mInfoRaw) ||
-        /\bverkauft von amazon\b/i.test(mInfoRaw);
-
-      if (amazonIsSeller) {
-        amazonBuyboxOwner = "Amazon";
-      } else if (mInfo.length > 0) {
-        // Extract the actual seller name from merchant-info.
-        // The anchor tag inside merchant-info links to the seller's storefront.
-        const sellerLink = merchantInfoEl.find('a').first().text().trim() ||
-                           $('#merchant-info a').first().text().trim();
-        if (sellerLink && sellerLink.toLowerCase() !== 'amazon') {
-          amazonBuyboxOwner = sellerLink;
-        } else {
-          // Last resort: strip known prefixes and return the raw text
-          amazonBuyboxOwner = mInfoRaw
-            .replace(/Dispatched from and sold by\s*/i, '')
-            .replace(/Dispatched from Amazon\s*\.?\s*/i, '')
-            .replace(/Sold by\s*/i, '')
-            .replace(/Fulfilled by Amazon\s*\.?\s*/i, '')
-            .replace(/\|.*$/s, '')           // strip everything after a pipe
-            .trim();
+      let sellerTrigger = "";
+      buyBoxContext.find('#sellerProfileTriggerId').each((_, el) => {
+        if ($(el).closest('#subscribeAndSaveAccordionRow, [class*="sns"], [id*="sns"]').length === 0) {
+          sellerTrigger = $(el).text().trim();
+          return false;
         }
+      });
+
+      let merchantLink = "";
+      buyBoxContext.find('#merchant-info a').each((_, el) => {
+        if ($(el).closest('#subscribeAndSaveAccordionRow, [class*="sns"], [id*="sns"]').length === 0) {
+          merchantLink = $(el).text().trim();
+          return false;
+        }
+      });
+
+      amazonBuyboxOwner = 
+        soldByTabular ||
+        buyBoxContext.find('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
+        buyBoxContext.find('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
+        sellerTrigger ||
+        merchantLink;
+    }
+
+    // Priority 3: Fallback ONLY if scoping of buyBoxContext yielded nothing
+    if (!amazonBuyboxOwner) {
+      amazonBuyboxOwner = 
+        $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
+        $('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
+        $('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
+        $('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
+        $('#sellerProfileTriggerId').first().text().trim() ||
+        $('#merchant-info a').first().text().trim();
+    }
+
+    // Priority 4: Parse original merchant text to sanitize the candidate or extract from text node
+    if (!amazonBuyboxOwner && mainMerchantText.length > 0) {
+      const sellerLink = mainMerchantEl ? (mainMerchantEl as any).find('a').first().text().trim() || $('#merchant-info a').first().text().trim() : "";
+      if (sellerLink && sellerLink.toLowerCase() !== 'amazon') {
+        amazonBuyboxOwner = sellerLink;
       } else {
-        amazonBuyboxOwner =
-          buyBoxContext.find('.offer-display-feature-text-message').first().text().trim() ||
-          $('#desktop_buybox .offer-display-feature-text-message').first().text().trim() ||
-          $('#rightCol .offer-display-feature-text-message').first().text().trim() ||
-          "";
+        amazonBuyboxOwner = mainMerchantText
+          .replace(/Dispatched from and sold by\s*/i, '')
+          .replace(/Dispatched from Amazon\s*\.?\s*/i, '')
+          .replace(/Sold by\s*/i, '')
+          .replace(/Fulfilled by Amazon\s*\.?\s*/i, '')
+          .replace(/\|.*$/s, '')
+          .trim();
       }
     }
 
@@ -916,33 +1193,74 @@ app.post("/api/audit/amazon", async (req, res) => {
           shippingDays = "2";
         }
         else {
-          // ── Date-based calculation (existing logic, unchanged) ─────────────────
-          const dayMatch = rawShippingTime.match(/(\d{1,2})(?:\.?\s*(?:de|di|d')?\s*)(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|wrze|paź|listopad|grudzień|styczeń|luty|kwiecień|maj|maj|maj|czerwiec|lipiec|sierpień|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)/i) ||
-                           rawShippingTime.match(/(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|maggio|giugno|luglio|maj|mai|maj|maj|maja|marca|kwietnia|lutego|stycznia|maja|maja|mája|maja|maj|maju|lipca|sierpnia|września|października|listopada|grudnia)(?:\s*(?:de|di)?\s*)(\d{1,2})/i);
-
+          // ── Date-based calculation ─────────────────
           let targetDate: Date | null = null;
 
-          if (dayMatch) {
-            const day = parseInt(dayMatch[1]);
-            const monthMatchStr = dayMatch[0].toLowerCase();
+          const monthNamesForRegex = [
+            'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+            'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+            'januar', 'februar', 'märz', 'juni', 'juli', 'oktober', 'okt', 'dezember', 'dez',
+            'janvier', 'janv', 'février', 'févr', 'avril', 'avr', 'juin', 'juillet', 'juil', 'août', 'aoû', 'septembre', 'octobre', 'novembre', 'décembre', 'déc',
+            'enero', 'ene', 'febrero', 'marzo', 'abril', 'abr', 'mayo', 'may', 'junio', 'julio', 'agosto', 'ago', 'septiembre', 'octubre', 'noviembre', 'diciembre', 'dic',
+            'gennaio', 'gen', 'febbraio', 'aprile', 'maggio', 'mag', 'giugno', 'giu', 'luglio', 'lug', 'settembre', 'set', 'ottobre', 'ott', 'dicembre',
+            'styczeń', 'stycznia', 'sty', 'luty', 'lutego', 'lut', 'marzec', 'marca', 'kwiecień', 'kwietnia', 'kwi', 'maja', 'maj', 'mai', 'czerwiec', 'czerwca', 'cze', 'lipiec', 'lipca', 'sierpień', 'sierpnia', 'sie', 'wrzesień', 'września', 'wrz', 'październik', 'października', 'paź', 'listopad', 'listopada', 'lis', 'grudzień', 'grudnia', 'gru',
+            'januari', 'augusti', 'maart', 'maa', 'mei', 'augustus'
+          ];
 
-            const monthsEn = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-            const monthsDe = ['jan', 'feb', 'mär', 'apr', 'mai', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dez'];
-            const monthsEs = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-            const monthsIt = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic', 'maggio', 'giugno', 'luglio'];
-            const monthsPl = ['sty', 'lut', 'mar', 'kwi', 'maj', 'cze', 'lip', 'sie', 'wrz', 'paź', 'lis', 'gru', 'stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia'];
-            const monthsSe = ['jan', 'feb', 'mar', 'apr', 'maj', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
-            const monthsNl = ['jan', 'feb', 'maa', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+          const getMonthIndex = (monthStr: string): number => {
+            const m = monthStr.toLowerCase();
+            
+            const map: { [key: string]: number } = {
+              // English
+              'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11,
+              'january': 0, 'february': 1, 'march': 2, 'april': 3, 'june': 5, 'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
+              // German
+              'januar': 0, 'februar': 1, 'märz': 2, 'mär': 2, 'juni': 5, 'juli': 6, 'oktober': 9, 'okt': 9, 'dezember': 11, 'dez': 11,
+              // French
+              'janvier': 0, 'janv': 0, 'février': 1, 'févr': 1, 'mars': 2, 'avril': 3, 'avr': 3, 'juin': 5, 'juillet': 6, 'juil': 6, 'août': 7, 'aoû': 7, 'septembre': 8, 'octobre': 9, 'novembre': 10, 'décembre': 11, 'déc': 11,
+              // Spanish
+              'enero': 0, 'ene': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'abr': 3, 'mayo': 4, 'junio': 5, 'julio': 6, 'agosto': 7, 'ago': 7, 'septiembre': 8, 'octubre': 9, 'noviembre': 10, 'diciembre': 11, 'dic': 11,
+              // Italian
+              'gennaio': 0, 'gen': 0, 'febbraio': 1, 'aprile': 3, 'maggio': 4, 'mag': 4, 'giugno': 5, 'giu': 5, 'luglio': 6, 'lug': 6, 'settembre': 8, 'set': 8, 'ottobre': 9, 'ott': 9, 'dicembre': 11,
+              // Polish
+              'styczeń': 0, 'stycznia': 0, 'sty': 0, 'luty': 1, 'lutego': 1, 'lut': 1, 'marzec': 2, 'marca': 2, 'kwiecień': 3, 'kwietnia': 3, 'kwi': 3, 'maja': 4, 'maj': 4, 'mai': 4, 'czerwiec': 5, 'czerwca': 5, 'cze': 5, 'lipiec': 6, 'lipca': 6, 'sierpień': 7, 'sierpnia': 7, 'sie': 7, 'wrzesień': 8, 'września': 8, 'wrz': 8, 'październik': 9, 'października': 9, 'paź': 9, 'listopad': 10, 'listopada': 10, 'lis': 10, 'grudzień': 11, 'grudnia': 11, 'gru': 11,
+              // Swedish
+              'januari': 0, 'augusti': 7,
+              // Dutch
+              'maart': 2, 'maa': 2, 'mei': 4, 'augustus': 7
+            };
 
-            let monthIndex = -1;
-            [monthsEn, monthsDe, monthsEs, monthsIt, monthsPl, monthsSe, monthsNl].forEach(mList => {
-              const idx = mList.findIndex(m => monthMatchStr.includes(m));
-              if (idx !== -1) { monthIndex = idx % 12; }
-            });
+            if (map[m] !== undefined) return map[m];
+            
+            for (const [key, val] of Object.entries(map)) {
+              if (m.includes(key) || key.includes(m)) {
+                return val;
+              }
+            }
+            return -1;
+          };
 
+          const monthRegexPattern = monthNamesForRegex.join('|');
+          let day = -1;
+          let monthStr = "";
+
+          const match1 = rawShippingTime.match(new RegExp(`(\\d{1,2})(?:\\.?\\s*(?:de|di|d')?\\s*)(${monthRegexPattern})`, 'i'));
+          if (match1) {
+            day = parseInt(match1[1]);
+            monthStr = match1[2];
+          } else {
+            const match2 = rawShippingTime.match(new RegExp(`(${monthRegexPattern})(?:\\s*(?:de|di)?\\s*)(\\d{1,2})`, 'i'));
+            if (match2) {
+              day = parseInt(match2[2]);
+              monthStr = match2[1];
+            }
+          }
+
+          if (day !== -1 && monthStr) {
+            const monthIndex = getMonthIndex(monthStr);
             if (monthIndex !== -1) {
               targetDate = new Date(today.getFullYear(), monthIndex, day);
-              if (targetDate < today && monthIndex < 2) {
+              if (targetDate.getTime() < today.getTime() - (24 * 60 * 60 * 1000 * 2)) {
                 targetDate.setFullYear(today.getFullYear() + 1);
               }
             }
