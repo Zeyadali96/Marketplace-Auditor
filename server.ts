@@ -192,24 +192,16 @@ app.post("/api/audit/amazon", async (req, res) => {
       } catch (err) { /* ignored */ }
 
       try {
-        console.log(`UI Regional Unlock: Evaluating postcode injection for ${domain} (Target: ${locConfig.zip})`);
-        
-        // Let's run a loop for up to 3 attempts to set the correct postcode
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          const isRegionalLocked = await page.evaluate(({ zip }) => {
-            const slot = document.querySelector('#nav-global-location-slot');
-            if (!slot) return true;
-            const text = slot.textContent || '';
-            const zipFirstPart = zip.split(/[\s-]+/)[0];
-            return !text.toLowerCase().includes(zip.toLowerCase()) && !text.toLowerCase().includes(zipFirstPart.toLowerCase());
-          }, { zip: locConfig.zip });
+        const isRegionalLocked = await page.evaluate(({ zip }) => {
+          const slot = document.querySelector('#nav-global-location-slot');
+          if (!slot) return true;
+          const text = slot.textContent || '';
+          const zipFirstPart = zip.split(/[\s-]+/)[0];
+          return !text.toLowerCase().includes(zip.toLowerCase()) && !text.toLowerCase().includes(zipFirstPart.toLowerCase());
+        }, { zip: locConfig.zip });
 
-          if (!isRegionalLocked) {
-            console.log(`Location successfully verified as applied! Slot is set to: ${locConfig.zip}`);
-            break;
-          }
-
-          console.log(`Location slot text doesn't contain ${locConfig.zip} (Attempt ${attempt}/3). Performing injection steps...`);
+        if (isRegionalLocked) {
+          console.log(`UI Regional Unlock: Injecting ${locConfig.zip} for ${domain} (country: ${locConfig.countryCode})`);
           
           const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 10000 }).catch(() => null);
           let popoverOpened = false;
@@ -219,7 +211,7 @@ app.post("/api/audit/amazon", async (req, res) => {
               console.log(`Clicking location button (attempt ${clickAttempt})...`);
               await locBtn.click({ force: true }).catch(() => null);
               await page.waitForTimeout(1500);
-              const isVisible = await page.locator('.a-popover-modal, .a-popover, #GLUXZipUpdateInput, #GLUXZipUpdateInput_0, #GLUXCountryList').isVisible().catch(() => false);
+              const isVisible = await page.locator('.a-popover-modal, .a-popover, #GLUXZipUpdateInput, #GLUXCountryList').isVisible().catch(() => false);
               if (isVisible) {
                 popoverOpened = true;
                 break;
@@ -227,202 +219,213 @@ app.post("/api/audit/amazon", async (req, res) => {
             }
           }
 
-          if (!popoverOpened) {
-            console.warn('Popover never opened.');
-            break;
-          }
-
-          const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip" i], input[aria-label*="postcode" i], input[aria-label*="code" i], input[name="zipCode" i]';
-          const countryListSelector = '#GLUXCountryList';
-          
-          // Wait for either Zip input or Country list dropdown
-          await page.waitForSelector(`${zipInputSelector}, ${countryListSelector}`, { state: 'visible', timeout: 5000 }).catch(() => null);
-          
-          let zipInput = await page.$(zipInputSelector);
-          let zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
-          
-          if (!zipVisible) {
-            console.log('Zip input not immediately visible, handling country select or list fallback...');
-            const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
+          if (popoverOpened) {
+            const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip"], input[aria-label*="postcode"], input[aria-label*="code"], input[name="zipCode"]';
+            const countryListSelector = '#GLUXCountryList';
             
-            if (countryListVisible && locConfig.countryCode) {
-              console.log(`Country dropdown detected. Attempting to select country: ${locConfig.countryCode}`);
+            // Wait for either Zip input or Country list dropdown
+            await page.waitForSelector(`${zipInputSelector}, ${countryListSelector}`, { state: 'visible', timeout: 5000 }).catch(() => null);
+            
+            let zipInput = await page.$(zipInputSelector);
+            let zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
+            
+            if (!zipVisible) {
+              console.log('Zip input not immediately visible, handling country select or list fallback...');
+              const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
               
-              let selectedVal = null;
-              try {
-                const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => 
-                  opts.map(o => ({ value: o.value, text: o.textContent?.trim() || "" }))
-                );
-                const targetCode = locConfig.countryCode.toLowerCase();
-                // Try to find by value match
-                const matchByVal = options.find(o => o.value.toLowerCase() === targetCode);
-                if (matchByVal) {
-                  selectedVal = matchByVal.value;
-                } else {
-                  const countryNamesMap: Record<string, string[]> = {
-                    'GB': ['united kingdom', 'royaume-uni', 'vereinigt', 'regno unito', 'reino unido', 'wielka brytania', 'storbritannien', 'england'],
-                    'FR': ['france', 'frankreich', 'francia'],
-                    'DE': ['germany', 'deutschland', 'allemagne', 'germania', 'niemcy', 'tyskland'],
-                    'IT': ['italy', 'itálie', 'italie', 'italien', 'italia', 'włochy'],
-                    'ES': ['spain', 'spanien', 'espagne', 'spagna', 'españa', 'hiszpania'],
-                    'PL': ['poland', 'polen', 'pologne', 'polonia', 'polska'],
-                    'NL': ['netherlands', 'niederlande', 'pays-bas', 'paesi bassi', 'países bajos', 'holandia', 'nederländerna', 'nederland'],
-                    'SE': ['sweden', 'schweden', 'suède', 'svezia', 'suecia', 'szwecja', 'sverige']
-                  };
-                  const names = countryNamesMap[locConfig.countryCode] || [];
-                  const matchByName = options.find(o => {
-                    const txt = o.text.toLowerCase();
-                    return names.some(n => txt.includes(n));
-                  });
-                  if (matchByName) {
-                    selectedVal = matchByName.value;
-                  }
-                }
-              } catch (e: any) {
-                console.warn("Failed to read country options:", e.message);
-              }
-              
-              if (selectedVal) {
-                console.log(`Selecting country option: ${selectedVal}`);
-                await page.selectOption(countryListSelector, { value: selectedVal }).catch(() => null);
-              } else {
-                console.log(`Fallback selecting country code: ${locConfig.countryCode}`);
-                await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
-              }
-              
-              await page.waitForTimeout(1000);
-              
-              // Click Apply/Done/Go button for country selection
-              const countryApplySelectors = [
-                '#GLUXCountryListDropdown .a-button-input',
-                'input[aria-labelledby="GLUXCountryList-announce"]',
-                '#GLUXCountryList-announce ~ input',
-                '.a-popover-footer input[type="submit"]',
-                '.a-popover-footer .a-button-input',
-                'button[name="glowDoneButton"]',
-                '#a-popover-1 .a-button-input',
-                '.a-popover-footer input'
-              ];
-              let countryApplied = false;
-              for (const sel of countryApplySelectors) {
+              if (countryListVisible && locConfig.countryCode) {
+                console.log(`Country dropdown detected. Attempting to select country: ${locConfig.countryCode}`);
+                
+                let selectedVal = null;
                 try {
-                  const btn = await page.$(sel);
-                  if (btn && await btn.isVisible()) {
-                    await btn.click({ force: true });
-                    countryApplied = true;
-                    console.log(`Country applied via: ${sel}`);
-                    break;
+                  const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => 
+                    opts.map(o => ({ value: o.value, text: o.textContent?.trim() || "" }))
+                  );
+                  const targetCode = locConfig.countryCode.toLowerCase();
+                  // Try to find by value match
+                  const matchByVal = options.find(o => o.value.toLowerCase() === targetCode);
+                  if (matchByVal) {
+                    selectedVal = matchByVal.value;
+                  } else {
+                    const countryNamesMap: Record<string, string[]> = {
+                      'GB': ['united kingdom', 'royaume-uni', 'vereinigt', 'regno unito', 'reino unido', 'wielka brytania', 'storbritannien', 'england'],
+                      'FR': ['france', 'frankreich', 'francia'],
+                      'DE': ['germany', 'deutschland', 'allemagne', 'germania', 'niemcy', 'tyskland'],
+                      'IT': ['italy', 'itálie', 'italie', 'italien', 'italia', 'włochy'],
+                      'ES': ['spain', 'spanien', 'espagne', 'spagna', 'españa', 'hiszpania'],
+                      'PL': ['poland', 'polen', 'pologne', 'polonia', 'polska'],
+                      'NL': ['netherlands', 'niederlande', 'pays-bas', 'paesi bassi', 'países bajos', 'holandia', 'nederländerna', 'nederland'],
+                      'SE': ['sweden', 'schweden', 'suède', 'svezia', 'suecia', 'szwecja', 'sverige']
+                    };
+                    const names = countryNamesMap[locConfig.countryCode] || [];
+                    const matchByName = options.find(o => {
+                      const txt = o.text.toLowerCase();
+                      return names.some(n => txt.includes(n));
+                    });
+                    if (matchByName) {
+                      selectedVal = matchByName.value;
+                    }
+                  }
+                } catch (e: any) {
+                  console.warn("Failed to read country options:", e.message);
+                }
+                
+                if (selectedVal) {
+                  console.log(`Selecting country option: ${selectedVal}`);
+                  await page.selectOption(countryListSelector, { value: selectedVal }).catch(() => null);
+                } else {
+                  console.log(`Fallback selecting country code: ${locConfig.countryCode}`);
+                  await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
+                }
+                
+                await page.waitForTimeout(1000);
+                
+                // Click Apply/Done/Go button for country selection
+                const countryApplySelectors = [
+                  '#GLUXCountryListDropdown .a-button-input',
+                  'input[aria-labelledby="GLUXCountryList-announce"]',
+                  '#GLUXCountryList-announce ~ input',
+                  '.a-popover-footer input[type="submit"]',
+                  '.a-popover-footer .a-button-input',
+                  'button[name="glowDoneButton"]',
+                  '#a-popover-1 .a-button-input',
+                  '.a-popover-footer input'
+                ];
+                let countryApplied = false;
+                for (const sel of countryApplySelectors) {
+                  try {
+                    const btn = await page.$(sel);
+                    if (btn && await btn.isVisible()) {
+                      await btn.click({ force: true });
+                      countryApplied = true;
+                      console.log(`Country applied via: ${sel}`);
+                      break;
+                    }
+                  } catch (_) {}
+                }
+                if (!countryApplied) {
+                  await page.keyboard.press('Enter').catch(() => null);
+                }
+                
+                // Wait for reload or DOM change
+                await page.waitForTimeout(2500);
+                await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+                
+                // Try to dismiss overlays if any
+                try {
+                  const dismissBtn = await page.$('button[name="glowDoneButton"], #GLUXConfirmClose input');
+                  if (dismissBtn && await dismissBtn.isVisible()) {
+                    await dismissBtn.click({ force: true });
+                    await page.waitForTimeout(1000);
                   }
                 } catch (_) {}
-              }
-              if (!countryApplied) {
-                await page.keyboard.press('Enter').catch(() => null);
-              }
-              
-              // Wait for reload or DOM change
-              await page.waitForTimeout(2500);
-              await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
-              
-              // Try to dismiss overlays if any
-              try {
-                const dismissBtn = await page.$('button[name="glowDoneButton"], #GLUXConfirmClose input');
-                if (dismissBtn && await dismissBtn.isVisible()) {
-                  await dismissBtn.click({ force: true });
-                  await page.waitForTimeout(1000);
-                }
-              } catch (_) {}
 
-              console.log(`Reloading ${domain} after country selection...`);
-              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+                // Re-open location popover for ZIP entry
+                console.log('Re-opening location popover for ZIP entry...');
+                let locBtn2 = null;
+                for (let clickAttempt2 = 1; clickAttempt2 <= 3; clickAttempt2++) {
+                  locBtn2 = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 5000 }).catch(() => null);
+                  if (locBtn2) {
+                    await locBtn2.click({ force: true }).catch(() => null);
+                    await page.waitForTimeout(1500);
+                    const checkZip = await page.$(zipInputSelector);
+                    if (checkZip && await checkZip.isVisible()) {
+                      zipInput = checkZip;
+                      zipVisible = true;
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+
+            if (zipInput || zipVisible) {
+              if (!zipInput) {
+                zipInput = await page.$(zipInputSelector);
+              }
+              if (zipInput) {
+                console.log(`Entering zip code/postcode: "${locConfig.zip}"`);
+                await zipInput.click({ clickCount: 3 }).catch(() => null);
+                await page.keyboard.press('Backspace').catch(() => null);
+                await zipInput.fill('');
+                await zipInput.type(locConfig.zip, { delay: 50 });
+                await page.waitForTimeout(500);
+                
+                // Click Apply button
+                const applySelectors = [
+                  '#GLUXZipUpdate input[type="submit"]',
+                  '#GLUXZipUpdate .a-button-input',
+                  '#GLUXZipUpdate > span > input',
+                  '#GLUXZipUpdate_Buttons input',
+                  '#GLUXZipUpdate_Buttons span.a-button-inner input',
+                  '#GLUXZipUpdate input',
+                  'input[aria-labelledby="GLUXZipUpdate-announce"]'
+                ];
+                let applied = false;
+                for (const sel of applySelectors) {
+                  try {
+                    const btn = await page.$(sel);
+                    if (btn && await btn.isVisible()) {
+                      await btn.click({ force: true });
+                      applied = true;
+                      console.log(`Apply clicked via: ${sel}`);
+                      break;
+                    }
+                  } catch (_) {}
+                }
+                if (!applied) {
+                  await page.keyboard.press('Enter').catch(() => null);
+                }
+                
+                await page.waitForTimeout(2000);
+                
+                // Click confirm/done if shown
+                const confirmSelectors = [
+                  '#GLUXConfirmClose input',
+                  '#GLUXConfirmClose .a-button-input',
+                  'input[data-action="GLUXConfirmResponse"]',
+                  '#GLUXConfirmClose-announce',
+                  'button[name="glowDoneButton"]',
+                  '.a-popover-footer .a-button-input',
+                  '.a-popover-footer input',
+                  'button:has-text("Done")',
+                  'button:has-text("Confirm")',
+                  'button:has-text("Continue")',
+                  'input[type="button"]:has-text("Done")',
+                  'span.a-button:has-text("Done") input',
+                  'span.a-button:has-text("Continue") input'
+                ];
+                for (const sel of confirmSelectors) {
+                  try {
+                    const btn = await page.$(sel);
+                    if (btn && await btn.isVisible()) {
+                      await btn.click({ force: true });
+                      console.log(`Confirmed done button via: ${sel}`);
+                      break;
+                    }
+                  } catch (_) {}
+                }
+                await page.waitForTimeout(1500);
+                
+                // Reload to apply the new delivery address
+                console.log(`Reloading ${domain} after location injection to apply ZIP change...`);
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+              }
+            } else {
+              console.warn('Zip input never appeared or became visible.');
             }
           } else {
-            console.log(`Zip input is visible. Proceeding with zip entry...`);
+            console.warn('Popover never opened.');
           }
-
-          // Fetch fresh Zip element if needed
-          zipInput = await page.$(zipInputSelector);
-          zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
-
-          if (zipInput && zipVisible) {
-            console.log(`Entering zip code/postcode: "${locConfig.zip}"`);
-            await zipInput.click({ clickCount: 3 }).catch(() => null);
-            await page.keyboard.press('Backspace').catch(() => null);
-            await zipInput.fill('');
-            await zipInput.type(locConfig.zip, { delay: 50 });
-            await page.waitForTimeout(500);
-            
-            // Click Apply button
-            const applySelectors = [
-              '#GLUXZipUpdate input[type="submit"]',
-              '#GLUXZipUpdate .a-button-input',
-              '#GLUXZipUpdate > span > input',
-              '#GLUXZipUpdate_Buttons input',
-              '#GLUXZipUpdate_Buttons span.a-button-inner input',
-              '#GLUXZipUpdate input',
-              'input[aria-labelledby="GLUXZipUpdate-announce"]',
-              '#GLUXZipUpdate-announce ~ input'
-            ];
-            let applied = false;
-            for (const sel of applySelectors) {
-              try {
-                const btn = await page.$(sel);
-                if (btn && await btn.isVisible()) {
-                  await btn.click({ force: true });
-                  applied = true;
-                  console.log(`Apply clicked via: ${sel}`);
-                  break;
-                }
-              } catch (_) {}
-            }
-            if (!applied) {
-              await page.keyboard.press('Enter').catch(() => null);
-            }
-            
-            await page.waitForTimeout(2000);
-            
-            // Click confirm/done if shown
-            const confirmSelectors = [
-              '#GLUXConfirmClose input',
-              '#GLUXConfirmClose .a-button-input',
-              'input[data-action="GLUXConfirmResponse"]',
-              '#GLUXConfirmClose-announce',
-              'button[name="glowDoneButton"]',
-              '.a-popover-footer .a-button-input',
-              '.a-popover-footer input',
-              'button:has-text("Done")',
-              'button:has-text("Confirm")',
-              'button:has-text("Continue")',
-              'input[type="button"]:has-text("Done")',
-              'span.a-button:has-text("Done") input',
-              'span.a-button:has-text("Continue") input'
-            ];
-            for (const sel of confirmSelectors) {
-              try {
-                const btn = await page.$(sel);
-                if (btn && await btn.isVisible()) {
-                  await btn.click({ force: true });
-                  console.log(`Confirmed done button via: ${sel}`);
-                  break;
-                }
-              } catch (_) {}
-            }
-            await page.waitForTimeout(1500);
-            
-            // Reload to apply the new delivery address
-            console.log(`Reloading ${domain} after postcode updates to finalize location change...`);
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-          } else {
-            console.warn('Zip input became unavailable or skipped after country select.');
-          }
+          
+          // Verify location was set
+          await page.waitForTimeout(800);
+          const finalLocText = await page.evaluate(() => {
+            const slot = document.querySelector('#nav-global-location-slot');
+            return slot ? slot.textContent?.replace(/\s+/g, ' ').trim() : '';
+          }).catch(() => '');
+          console.log(`Location slot after injection: "${finalLocText}"`);
         }
-
-        // Verify final status
-        await page.waitForTimeout(800);
-        const finalLocText = await page.evaluate(() => {
-          const slot = document.querySelector('#nav-global-location-slot');
-          return slot ? slot.textContent?.replace(/\s+/g, ' ').trim() : '';
-        }).catch(() => '');
-        console.log(`Location slot after injection: "${finalLocText}"`);
       } catch (err: any) {
         console.warn("Location UI injection skipped or failed:", err.message);
       }
@@ -1189,102 +1192,85 @@ app.post("/api/audit/amazon", async (req, res) => {
         else if (raw.includes('overmorgen') || raw.includes('après-demain') || raw.includes('dopodomani')) {
           shippingDays = "2";
         }
-        // ── Shortcut: literal day ranges or counts (e.g. 1-2 jours, 3 dni, 3 days) ───
         else {
-          const rangeMatch = raw.match(/(\d+)\s*[-–]\s*(\d+)\s*(?:day|jour|tag|giorn|dí|di|dag|dn|dagar)/i);
-          const singleMatch = raw.match(/(\d+)\s*(?:day|jour|tag|giorn|dí|di|dag|dn|dagar)/i);
-          if (rangeMatch) {
-            shippingDays = rangeMatch[2]; // Use upper bound
-          } else if (singleMatch) {
-            shippingDays = singleMatch[1];
-          } else {
-            // ── Date-based calculation ─────────────────
-            let targetDate: Date | null = null;
+          // ── Date-based calculation ─────────────────
+          let targetDate: Date | null = null;
 
-            const monthNamesForRegex = [
-              'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
-              'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
-              'januar', 'februar', 'märz', 'juni', 'juli', 'oktober', 'okt', 'dezember', 'dez',
-              'janvier', 'janv', 'février', 'févr', 'avril', 'avr', 'juin', 'juillet', 'juil', 'août', 'aoû', 'septembre', 'octobre', 'novembre', 'décembre', 'déc',
-              'enero', 'ene', 'febrero', 'marzo', 'abril', 'abr', 'mayo', 'may', 'junio', 'julio', 'agosto', 'ago', 'septiembre', 'octubre', 'noviembre', 'diciembre', 'dic',
-              'gennaio', 'gen', 'febbraio', 'aprile', 'maggio', 'mag', 'giugno', 'giu', 'luglio', 'lug', 'settembre', 'set', 'ottobre', 'ott', 'dicembre',
-              'styczeń', 'stycznia', 'sty', 'luty', 'lutego', 'lut', 'marzec', 'marca', 'kwiecień', 'kwietnia', 'kwi', 'maja', 'maj', 'mai', 'czerwiec', 'czerwca', 'cze', 'lipiec', 'lipca', 'sierpień', 'sierpnia', 'sie', 'wrzesień', 'września', 'wrz', 'październik', 'października', 'paź', 'listopad', 'listopada', 'lis', 'grudzień', 'grudnia', 'gru',
-              'januari', 'augusti', 'maart', 'maa', 'mei', 'augustus'
-            ];
+          const monthNamesForRegex = [
+            'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+            'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+            'januar', 'februar', 'märz', 'juni', 'juli', 'oktober', 'okt', 'dezember', 'dez',
+            'janvier', 'janv', 'février', 'févr', 'avril', 'avr', 'juin', 'juillet', 'juil', 'août', 'aoû', 'septembre', 'octobre', 'novembre', 'décembre', 'déc',
+            'enero', 'ene', 'febrero', 'marzo', 'abril', 'abr', 'mayo', 'may', 'junio', 'julio', 'agosto', 'ago', 'septiembre', 'octubre', 'noviembre', 'diciembre', 'dic',
+            'gennaio', 'gen', 'febbraio', 'aprile', 'maggio', 'mag', 'giugno', 'giu', 'luglio', 'lug', 'settembre', 'set', 'ottobre', 'ott', 'dicembre',
+            'styczeń', 'stycznia', 'sty', 'luty', 'lutego', 'lut', 'marzec', 'marca', 'kwiecień', 'kwietnia', 'kwi', 'maja', 'maj', 'mai', 'czerwiec', 'czerwca', 'cze', 'lipiec', 'lipca', 'sierpień', 'sierpnia', 'sie', 'wrzesień', 'września', 'wrz', 'październik', 'października', 'paź', 'listopad', 'listopada', 'lis', 'grudzień', 'grudnia', 'gru',
+            'januari', 'augusti', 'maart', 'maa', 'mei', 'augustus'
+          ];
 
-            const getMonthIndex = (monthStr: string): number => {
-              const m = monthStr.toLowerCase();
-              
-              const map: { [key: string]: number } = {
-                // English
-                'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11,
-                'january': 0, 'february': 1, 'march': 2, 'april': 3, 'june': 5, 'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
-                // German
-                'januar': 0, 'februar': 1, 'märz': 2, 'mär': 2, 'juni': 5, 'juli': 6, 'oktober': 9, 'okt': 9, 'dezember': 11, 'dez': 11,
-                // French
-                'janvier': 0, 'janv': 0, 'février': 1, 'févr': 1, 'mars': 2, 'avril': 3, 'avr': 3, 'juin': 5, 'juillet': 6, 'juil': 6, 'août': 7, 'aoû': 7, 'septembre': 8, 'octobre': 9, 'novembre': 10, 'décembre': 11, 'déc': 11,
-                // Spanish
-                'enero': 0, 'ene': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'abr': 3, 'mayo': 4, 'junio': 5, 'julio': 6, 'agosto': 7, 'ago': 7, 'septiembre': 8, 'octubre': 9, 'noviembre': 10, 'diciembre': 11, 'dic': 11,
-                // Italian
-                'gennaio': 0, 'gen': 0, 'febbraio': 1, 'aprile': 3, 'maggio': 4, 'mag': 4, 'giugno': 5, 'giu': 5, 'luglio': 6, 'lug': 6, 'settembre': 8, 'set': 8, 'ottobre': 9, 'ott': 9, 'dicembre': 11,
-                // Polish
-                'styczeń': 0, 'stycznia': 0, 'sty': 0, 'luty': 1, 'lutego': 1, 'lut': 1, 'marzec': 2, 'marca': 2, 'kwiecień': 3, 'kwietnia': 3, 'kwi': 3, 'maja': 4, 'maj': 4, 'mai': 4, 'czerwiec': 5, 'czerwca': 5, 'cze': 5, 'lipiec': 6, 'lipca': 6, 'sierpień': 7, 'sierpnia': 7, 'sie': 7, 'wrzesień': 8, 'września': 8, 'wrz': 8, 'październik': 9, 'października': 9, 'paź': 9, 'listopad': 10, 'listopada': 10, 'lis': 10, 'grudzień': 11, 'grudnia': 11, 'gru': 11,
-                // Swedish
-                'januari': 0, 'augusti': 7,
-                // Dutch
-                'maart': 2, 'maa': 2, 'mei': 4, 'augustus': 7
-              };
-
-              if (map[m] !== undefined) return map[m];
-              
-              for (const [key, val] of Object.entries(map)) {
-                if (m.includes(key) || key.includes(m)) {
-                  return val;
-                }
-              }
-              return -1;
+          const getMonthIndex = (monthStr: string): number => {
+            const m = monthStr.toLowerCase();
+            
+            const map: { [key: string]: number } = {
+              // English
+              'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5, 'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11,
+              'january': 0, 'february': 1, 'march': 2, 'april': 3, 'june': 5, 'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11,
+              // German
+              'januar': 0, 'februar': 1, 'märz': 2, 'mär': 2, 'juni': 5, 'juli': 6, 'oktober': 9, 'okt': 9, 'dezember': 11, 'dez': 11,
+              // French
+              'janvier': 0, 'janv': 0, 'février': 1, 'févr': 1, 'mars': 2, 'avril': 3, 'avr': 3, 'juin': 5, 'juillet': 6, 'juil': 6, 'août': 7, 'aoû': 7, 'septembre': 8, 'octobre': 9, 'novembre': 10, 'décembre': 11, 'déc': 11,
+              // Spanish
+              'enero': 0, 'ene': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'abr': 3, 'mayo': 4, 'junio': 5, 'julio': 6, 'agosto': 7, 'ago': 7, 'septiembre': 8, 'octubre': 9, 'noviembre': 10, 'diciembre': 11, 'dic': 11,
+              // Italian
+              'gennaio': 0, 'gen': 0, 'febbraio': 1, 'aprile': 3, 'maggio': 4, 'mag': 4, 'giugno': 5, 'giu': 5, 'luglio': 6, 'lug': 6, 'settembre': 8, 'set': 8, 'ottobre': 9, 'ott': 9, 'dicembre': 11,
+              // Polish
+              'styczeń': 0, 'stycznia': 0, 'sty': 0, 'luty': 1, 'lutego': 1, 'lut': 1, 'marzec': 2, 'marca': 2, 'kwiecień': 3, 'kwietnia': 3, 'kwi': 3, 'maja': 4, 'maj': 4, 'mai': 4, 'czerwiec': 5, 'czerwca': 5, 'cze': 5, 'lipiec': 6, 'lipca': 6, 'sierpień': 7, 'sierpnia': 7, 'sie': 7, 'wrzesień': 8, 'września': 8, 'wrz': 8, 'październik': 9, 'października': 9, 'paź': 9, 'listopad': 10, 'listopada': 10, 'lis': 10, 'grudzień': 11, 'grudnia': 11, 'gru': 11,
+              // Swedish
+              'januari': 0, 'augusti': 7,
+              // Dutch
+              'maart': 2, 'maa': 2, 'mei': 4, 'augustus': 7
             };
 
-            const monthRegexPattern = monthNamesForRegex.join('|');
-            let day = -1;
-            let monthStr = "";
-
-            // Check if there is a day range first, e.g. "5 - 7 juin" or "5-7 czerwca"
-            // We want to match the second number (upper bound) of the range
-            const rangeDateMatch = raw.match(new RegExp(`(?:\\d{1,2})\\s*[-–]\\s*(\\d{1,2})(?:\\.?\\s*(?:de|di|d')?\\s*)(${monthRegexPattern})`, 'i'));
-            if (rangeDateMatch) {
-              day = parseInt(rangeDateMatch[1]);
-              monthStr = rangeDateMatch[2];
-            } else {
-              const match1 = raw.match(new RegExp(`(\\d{1,2})(?:\\.?\\s*(?:de|di|d')?\\s*)(${monthRegexPattern})`, 'i'));
-              if (match1) {
-                day = parseInt(match1[1]);
-                monthStr = match1[2];
-              } else {
-                const match2 = raw.match(new RegExp(`(${monthRegexPattern})(?:\\s*(?:de|di)?\\s*)(\\d{1,2})`, 'i'));
-                if (match2) {
-                  day = parseInt(match2[2]);
-                  monthStr = match2[1];
-                }
+            if (map[m] !== undefined) return map[m];
+            
+            for (const [key, val] of Object.entries(map)) {
+              if (m.includes(key) || key.includes(m)) {
+                return val;
               }
             }
+            return -1;
+          };
 
-            if (day !== -1 && monthStr) {
-              const monthIndex = getMonthIndex(monthStr);
-              if (monthIndex !== -1) {
-                targetDate = new Date(today.getFullYear(), monthIndex, day);
-                if (targetDate.getTime() < today.getTime() - (24 * 60 * 60 * 1000 * 2)) {
-                  targetDate.setFullYear(today.getFullYear() + 1);
-                }
+          const monthRegexPattern = monthNamesForRegex.join('|');
+          let day = -1;
+          let monthStr = "";
+
+          const match1 = rawShippingTime.match(new RegExp(`(\\d{1,2})(?:\\.?\\s*(?:de|di|d')?\\s*)(${monthRegexPattern})`, 'i'));
+          if (match1) {
+            day = parseInt(match1[1]);
+            monthStr = match1[2];
+          } else {
+            const match2 = rawShippingTime.match(new RegExp(`(${monthRegexPattern})(?:\\s*(?:de|di)?\\s*)(\\d{1,2})`, 'i'));
+            if (match2) {
+              day = parseInt(match2[2]);
+              monthStr = match2[1];
+            }
+          }
+
+          if (day !== -1 && monthStr) {
+            const monthIndex = getMonthIndex(monthStr);
+            if (monthIndex !== -1) {
+              targetDate = new Date(today.getFullYear(), monthIndex, day);
+              if (targetDate.getTime() < today.getTime() - (24 * 60 * 60 * 1000 * 2)) {
+                targetDate.setFullYear(today.getFullYear() + 1);
               }
             }
+          }
 
-            if (targetDate) {
-              targetDate.setHours(0, 0, 0, 0);
-              const diffTime = targetDate.getTime() - today.getTime();
-              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-              if (diffDays >= 0) shippingDays = diffDays.toString();
-            }
+          if (targetDate) {
+            targetDate.setHours(0, 0, 0, 0);
+            const diffTime = targetDate.getTime() - today.getTime();
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            if (diffDays >= 0) shippingDays = diffDays.toString();
           }
         }
       }
