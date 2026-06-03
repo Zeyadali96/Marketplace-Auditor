@@ -1,6 +1,6 @@
 import { chromium as chromiumExtra } from 'playwright-extra';
 import stealth from 'puppeteer-extra-plugin-stealth';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import { getSimilarity, cleanAndNormalizePrice } from './helpers.ts';
 
 function isRailwayDeployment(): boolean {
@@ -28,19 +28,7 @@ export async function tryBolViaGemini(ean: string, masterTitle?: string): Promis
     return null;
   }
 
-  try {
-    const genai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
-
-    console.log('[BOL GEMINI] Generating content with googleSearch grounding for EAN:', ean);
-
-    const prompt = `You are a professional product intelligence scraper for bol.com.
+  const prompt = `You are a professional product intelligence scraper for bol.com.
 Locate the correct product matching the EAN "${ean}" and product title "${masterTitle || ''}".
 
 Please follow these exact steps to find the product:
@@ -49,114 +37,122 @@ Please follow these exact steps to find the product:
 3. Find the official product listing page on bol.com and extract information.
 4. Extract the live attributes of the product: title, price, shipping time message, description, bullet points, image URLs, product URL, variations, and buyboxOwner (seller name). Ensure they are fully grounded in search results.
 
-Fill in the exact product details into the requested JSON schema. Do not make up or hallucinate any values. If an attribute cannot be found, set it to "N/A" rather than leaving it empty.`;
+Return ONLY a single, exact JSON object matching the following structure. No other conversational text, no other markdown text. Ensure it is wrapped in an exact \`\`\`json markdown block:
+{
+  "title": "exact full product title on bol.com",
+  "price": "correct numerical price string e.g. 14.99",
+  "shipping": "correct shipping time/delivery message e.g. 'Morgen in huis' or 'Uiterlijk donderdag 22 mei'",
+  "description": "product description details, first 500 characters",
+  "images": ["image url 1", "image url 2"],
+  "bullets": ["feature point 1", "feature point 2"],
+  "productUrl": "the direct final product link on bol.com",
+  "liveVariations": "variation options if any, else empty string",
+  "buyboxOwner": "The seller name (verkocht door). Defaults to 'bol.com' if sold/shipped by them."
+}
 
-    const response = await genai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
-        temperature: 0.1,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { 
-              type: Type.STRING, 
-              description: "The exact, full product title on bol.com. Match the live page exactly." 
-            },
-            price: { 
-              type: Type.STRING, 
-              description: "The live price of the product on bol.com, e.g., '14.99'. Do not include currency symbols." 
-            },
-            shipping: { 
-              type: Type.STRING, 
-              description: "The delivery text / shipping message on bol.com, e.g., 'Morgen in huis', 'Uiterlijk donderdag 22 mei', or '2-3 werkdagen'. Do NOT make this up." 
-            },
-            description: { 
-              type: Type.STRING, 
-              description: "The product description, first 500 characters." 
-            },
-            images: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING },
-              description: "An array of image URLs found on bol.com listing page." 
-            },
-            bullets: { 
-              type: Type.ARRAY, 
-              items: { type: Type.STRING },
-              description: "An array of bullet points or product features from the page." 
-            },
-            productUrl: { 
-              type: Type.STRING, 
-              description: "The direct URL of the product page matching this EAN on bol.com." 
-            },
-            liveVariations: { 
-              type: Type.STRING, 
-              description: "Variation options if any (e.g., sizes, colors), else empty string." 
-            },
-            buyboxOwner: { 
-              type: Type.STRING, 
-              description: "The name of the seller (e.g. verkocht door ...). Default to 'bol.com' if sold/shipped by them." 
-            }
-          },
-          required: ["title", "price", "shipping", "productUrl"]
-        }
-      }
-    });
+Ensure all extracted values (pricing, title, shipping) are fully grounded in search results. If an attribute cannot be found, set it to "N/A" rather than leaving it empty.`;
 
-    const rawText = response.text?.trim() || '';
-    console.log('[BOL GEMINI] Raw response length:', rawText.length);
-
-    const normalizeParsedData = (obj: any) => {
-      if (!obj) return obj;
-      if (obj.productUrl && typeof obj.productUrl === 'string') {
-        const url = obj.productUrl.trim();
-        if (url && !url.startsWith('http') && !url.startsWith('//')) {
-          obj.productUrl = 'https://www.bol.com' + (url.startsWith('/') ? '' : '/') + url;
-        }
+  const normalizeParsedData = (obj: any) => {
+    if (!obj) return obj;
+    if (obj.productUrl && typeof obj.productUrl === 'string') {
+      const url = obj.productUrl.trim();
+      if (url && !url.startsWith('http') && !url.startsWith('//')) {
+        obj.productUrl = 'https://www.bol.com' + (url.startsWith('/') ? '' : '/') + url;
       }
-      if (Array.isArray(obj.images)) {
-        obj.images = obj.images.map((img: any) => {
-          if (typeof img === 'string') {
-            const trimmed = img.trim();
-            if (trimmed && !trimmed.startsWith('http') && !trimmed.startsWith('//')) {
-              return 'https://www.bol.com' + (trimmed.startsWith('/') ? '' : '/') + trimmed;
-            }
-            return trimmed;
-          }
-          return img;
-        }).filter(Boolean);
-      }
-      return obj;
-    };
-
-    try {
-      const parsed = JSON.parse(rawText);
-      if (parsed && parsed.title) {
-        const finalized = normalizeParsedData(parsed);
-        finalized._source = 'gemini-google-search';
-        return finalized;
-      }
-    } catch (parseErr) {
-      console.log('[BOL GEMINI] Direct JSON parse failed, trying regex extraction. Raw text:', rawText);
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          const extracted = JSON.parse(jsonMatch[0]);
-          if (extracted && extracted.title) {
-            const finalized = normalizeParsedData(extracted);
-            finalized._source = 'gemini-google-search';
-            return finalized;
-          }
-        } catch (_) {}
-      }
-      console.log('[BOL GEMINI] Regex JSON parse failed:', parseErr);
     }
-  } catch (e: any) {
-    console.log('[BOL GEMINI] Strategy failed:', e.message);
+    if (Array.isArray(obj.images)) {
+      obj.images = obj.images.map((img: any) => {
+        if (typeof img === 'string') {
+          const trimmed = img.trim();
+          if (trimmed && !trimmed.startsWith('http') && !trimmed.startsWith('//')) {
+            return 'https://www.bol.com' + (trimmed.startsWith('/') ? '' : '/') + trimmed;
+          }
+          return trimmed;
+        }
+        return img;
+      }).filter(Boolean);
+    }
+    return obj;
+  };
+
+  const maxAttempts = 3;
+  let lastError: any = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const genai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
+      console.log(`[BOL GEMINI] Generating content with googleSearch grounding (attempt ${attempt}/${maxAttempts}) for EAN:`, ean);
+
+      const response = await genai.models.generateContent({
+        model: 'gemini-3.5-flash',
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          temperature: 0.1,
+        }
+      });
+
+      const rawText = response.text?.trim() || '';
+      console.log('[BOL GEMINI] Raw response length:', rawText.length);
+
+      const jsonText = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+
+      try {
+        const parsed = JSON.parse(jsonText);
+        if (parsed && parsed.title) {
+          const finalized = normalizeParsedData(parsed);
+          finalized._source = 'gemini-google-search';
+          return finalized;
+        }
+      } catch (parseErr) {
+        console.log('[BOL GEMINI] Direct JSON parse failed, trying regex extraction. Raw text length:', rawText.length);
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            const extracted = JSON.parse(jsonMatch[0]);
+            if (extracted && extracted.title) {
+              const finalized = normalizeParsedData(extracted);
+              finalized._source = 'gemini-google-search';
+              return finalized;
+            }
+          } catch (_) {}
+        }
+        console.log('[BOL GEMINI] Regex JSON parse failed:', parseErr);
+      }
+
+      lastError = new Error('JSON parsing failed from Gemini output response');
+
+    } catch (e: any) {
+      lastError = e;
+      console.log(`[BOL GEMINI] Attempt ${attempt} failed:`, e.message);
+
+      const isRateOrQuotaLimit = 
+        e.message?.includes('429') || 
+        e.message?.includes('RESOURCE_EXHAUSTED') || 
+        e.message?.includes('quota') || 
+        e.message?.includes('limit');
+
+      if (isRateOrQuotaLimit && attempt < maxAttempts) {
+        const backoffMs = attempt * 5000 + Math.floor(Math.random() * 2000);
+        console.log(`[BOL GEMINI] Rate limit / quota error detected. Retrying in ${backoffMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+      } else {
+        break;
+      }
+    }
   }
 
+  if (lastError) {
+    console.log('[BOL GEMINI] All Gemini attempts exhausted. Final error:', lastError.message);
+  }
   return null;
 }
 
