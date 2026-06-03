@@ -1020,13 +1020,18 @@ app.post("/api/audit/amazon", async (req, res) => {
       '[data-feature-name="product-facts"] .a-list-item',
       '.product-facts-title + .a-unordered-list li:not(:has(ul))',
       '#product-facts-grid li:not(:has(ul))',
-      '#productFactsDesktopExpander .a-list-item'
+      '#productFactsDesktopExpander .a-list-item',
+      '#feature-bullets .a-list-item',
+      '#featurebullets_feature_div .a-list-item',
+      '#feature-bullets ul li',
+      '#featurebullets_feature_div ul li',
+      '#aboutThisItem ul.a-unordered-list.a-vertical li'
     ];
 
     $(bulletSelectors.join(', ')).each((_, el) => {
       const $el = $(el);
       
-      // 1. Stricter container exclusion to avoid reviews, ads, and legal sections
+      // 1. Stricter container exclusion to avoid reviews, ads, specs, variations, and BSR elements
       const junkContainers = [
         '#customerReviews',
         '#reviews-medley-footer',
@@ -1039,7 +1044,29 @@ app.post("/api/audit/amazon", async (req, res) => {
         '#social-proofing-faceout-feature-div',
         '#dp-ads-center-promo-pc_desktop_view_div',
         '.cr-widget-FocalReviews',
-        '.a-expander-content.a-expander-partial-collapse-content'
+        '#detailBullets_feature_div',
+        '#prodDetails',
+        '#productDetails_feature_div',
+        '#technicalSpecifications_feature_div',
+        '#detail-bullets',
+        '.detail-bullets',
+        '.detail-bullet-list',
+        '#productDetails_db_sections',
+        '#averageCustomerReviews',
+        '#averageCustomerReviews_feature_div',
+        '#reviewsMedley',
+        '#twister',
+        '#twister-plus-inline-twister',
+        '#inline-twister-row-all-options',
+        '#variation_color_name',
+        '#variation_size_name',
+        '#variation_style_name',
+        '#inline-twister-dim-values-container',
+        '#tp-inline-twister-dim-values-container',
+        '.twister-image-select',
+        '#quickPromoBucketContent',
+        '#similarities_feature_div',
+        '#HLCXComparisonWidget_feature_div'
       ];
       if ($el.closest(junkContainers.join(', ')).length > 0) {
         return;
@@ -1063,6 +1090,48 @@ app.post("/api/audit/amazon", async (req, res) => {
 
       const isJunk = (t: string) => {
         const lower = t.toLowerCase();
+        
+        // Match rankings / best seller rank (BSR) patterns in Spanish, English, German, French, Dutch
+        const isBSR = 
+          lower.includes('top 100') ||
+          lower.includes('en más vendidos') ||
+          lower.includes('en mas vendidos') ||
+          lower.includes('best seller') ||
+          lower.includes('bestseller') ||
+          /nº\s*\d+/i.test(lower) ||
+          /#\s*\d+/i.test(lower) ||
+          /puesto\s*nº\s*\d+/i.test(lower) ||
+          /ranking/i.test(lower) ||
+          /clasificación/i.test(lower) ||
+          /bestsellers/i.test(lower);
+
+        // Match technical specifications metadata: ASIN, EAN, Manufacturer, Ref, Part Number, Date First Available, etc.
+        const isTechnicalMeta =
+          /asin\s*:/i.test(lower) ||
+          /ean\s*:/i.test(lower) ||
+          /isbn\s*:/i.test(lower) ||
+          /fabricante\s*:/i.test(lower) ||
+          /hersteller\s*:/i.test(lower) ||
+          /manufacturer\s*:/i.test(lower) ||
+          /brand\s*:/i.test(lower) ||
+          /marca\s*:/i.test(lower) ||
+          /referencia\s+del\s+fabricante/i.test(lower) ||
+          /manufacturer\s+reference/i.test(lower) ||
+          /part\s+number/i.test(lower) ||
+          /número\s+de\s+modelo/i.test(lower) ||
+          /model\s+number/i.test(lower) ||
+          /dimensiones/i.test(lower) ||
+          /dimensions/i.test(lower) ||
+          /peso/i.test(lower) ||
+          /weight/i.test(lower) ||
+          /producto\s+en\s+amazon/i.test(lower) ||
+          /product\s+since/i.test(lower) ||
+          /disponible\s+desde/i.test(lower) ||
+          /available\s+since/i.test(lower) ||
+          /date\s+first\s+available/i.test(lower) ||
+          /opiniones\s+de\s+los/i.test(lower) ||
+          /customer\s+reviews/i.test(lower);
+
         return (
           lower.includes('window.ue') ||
           lower.includes('if(window.ue)') ||
@@ -1084,7 +1153,9 @@ app.post("/api/audit/amazon", async (req, res) => {
           t.length > 1000 ||
           /^(\d+)\s+out of\s+5\s+stars/i.test(t) ||
           /Reviewed in the .* on \d+/.test(t) ||
-          /^\d+ ratings?$/.test(t)
+          /^\d+ ratings?$/.test(t) ||
+          isBSR ||
+          isTechnicalMeta
         );
       };
 
@@ -1337,28 +1408,74 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
     variations: { match: live.variations > 1 }
   };
 
-  result.description.similarity = getSimilarity(master.description || "", live.description || "");
+  if (live.hasAPlus && !live.description) {
+    result.description.similarity = 1.0;
+    result.description.match = true;
+  } else {
+    result.description.similarity = getSimilarity(master.description || "", live.description || "");
+    if (result.description.similarity > 0.6 || live.hasAPlus) result.description.match = true;
+  }
 
   if (result.title.similarity > 0.8) result.title.match = true;
-  if (result.description.similarity > 0.6 || live.hasAPlus) result.description.match = true;
   
-  // Bullets match
-  if (master.bullets && Array.isArray(master.bullets)) {
-    master.bullets.forEach((mb: string) => {
-      let bestSim = 0;
-      let bestLive = "";
-      if (live.bullets && Array.isArray(live.bullets)) {
-        live.bullets.forEach((lb: string) => {
-          const sim = getSimilarity(mb, lb);
-          if (sim > bestSim) {
-            bestSim = sim;
-            bestLive = lb;
-          }
-        });
+  // Bullets match and alignment
+  const masterBullets = Array.isArray(master.bullets) ? master.bullets.filter(Boolean) : [];
+  const liveBullets = Array.isArray(live.bullets) ? live.bullets.filter(Boolean) : [];
+  const bulletsResults: any[] = [];
+  const matchedLiveIndices = new Set<number>();
+
+  // 1. Pair up each master bullet with the best matching (highest similarity) live bullet
+  masterBullets.forEach((mb: string) => {
+    let bestSim = 0;
+    let bestLiveIndex = -1;
+    
+    liveBullets.forEach((lb: string, idx: number) => {
+      if (matchedLiveIndices.has(idx)) return;
+      const sim = getSimilarity(mb, lb);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestLiveIndex = idx;
       }
-      result.bullets.push({ master: mb, live: bestLive, similarity: bestSim, match: bestSim > 0.7 });
     });
-  }
+
+    if (bestLiveIndex !== -1 && bestSim > 0.3) {
+      matchedLiveIndices.add(bestLiveIndex);
+      bulletsResults.push({
+        master: mb,
+        live: liveBullets[bestLiveIndex],
+        similarity: bestSim,
+        match: bestSim > 0.7
+      });
+    } else {
+      bulletsResults.push({
+        master: mb,
+        live: "",
+        similarity: 0,
+        match: false
+      });
+    }
+  });
+
+  // 2. For remaining unmatched live bullets, we try to place them in master rows with empty live placeholders first
+  liveBullets.forEach((lb: string, idx: number) => {
+    if (matchedLiveIndices.has(idx)) return;
+    
+    const unfilledRow = bulletsResults.find(r => r.master && !r.live);
+    if (unfilledRow) {
+      unfilledRow.live = lb;
+      unfilledRow.similarity = getSimilarity(unfilledRow.master, lb);
+      unfilledRow.match = unfilledRow.similarity > 0.7;
+    } else {
+      bulletsResults.push({
+        master: "",
+        live: lb,
+        similarity: 0,
+        match: false
+      });
+    }
+  });
+
+  result.bullets = bulletsResults;
 
   // Price match (fuzzy)
   const masterPriceNum = parseFloat(String(master.price || "").replace(/[^0-9.]/g, '')) || 0;
@@ -1927,7 +2044,15 @@ async function extractCatalogue(page: any) {
       '.product-features li',
       '.js_product_features li',
       '.specs-list__item',
-      '.product-specifications li'
+      '.product-specifications li',
+      '.specs-list-item',
+      '[data-test="product-specifications"] li',
+      '.key-benefits__list-item',
+      '.pdp-specs__row',
+      '.key-benefit',
+      '.product-features__item',
+      '.usp-list li',
+      '.usp-item'
     ];
     const bulletSet = new Set<string>();
     bulletSel.forEach(sel => {

@@ -227,16 +227,52 @@ export default function App() {
       description: mode === 'bol'
         ? getVal(row, 'Body NL: Bol Decoded', 'Body NL', 'Bol Description', 'Description')
         : getVal(row, `AMZ body${suffix}`, `AMZ Body${suffix}`, `Amazon Description ${langCode}`, 'Description'),
-      // --- Bullet Points (Amazon only — Bol has no bullets) ---
-      bullets: mode === 'amazon'
-        ? [
-            getVal(row, `Bullet point 1${suffix}`),
-            getVal(row, `Bullet point 2${suffix}`),
-            getVal(row, `Bullet point 3${suffix}`),
-            getVal(row, `Bullet point 4${suffix}`),
-            getVal(row, `Bullet point 5${suffix}`)
-          ].filter(Boolean)
-        : [],
+      // --- Bullet Points (Extracted across both Bol and Amazon) ---
+      bullets: (() => {
+        const bulletList: string[] = [];
+        // Support up to 10 bullet points across both modes
+        for (let i = 1; i <= 10; i++) {
+          const val = getVal(
+            row,
+            `Bullet point ${i}${suffix}`,
+            `Bullet point ${i}`,
+            `Bullet ${i}${suffix}`,
+            `Bullet ${i}`,
+            `USP ${i}`,
+            `usp-${i}`,
+            `kenmerk ${i}`,
+            `Feature ${i}`,
+            `feature-${i}`
+          );
+          if (val) {
+            bulletList.push(val);
+          }
+        }
+        
+        // Dynamic sweep fallback: scan the Google Sheet row keys for columns containing bullet, usp, features, or kenmerk
+        if (bulletList.length === 0) {
+          const keys = Object.keys(row);
+          // Sort keys to maintain correct ordering (e.g. 1, 2, 3...)
+          keys.sort((a, b) => {
+            const numA = parseInt(a.replace(/\D/g, '')) || 0;
+            const numB = parseInt(b.replace(/\D/g, '')) || 0;
+            return numA - numB;
+          });
+          keys.forEach(k => {
+            const lowerK = k.toLowerCase();
+            if (
+              (lowerK.includes('bullet') || lowerK.includes('usp') || (lowerK.includes('feature') && !lowerK.includes('image')) || lowerK.includes('kenmerk')) &&
+              !lowerK.includes('match') && !lowerK.includes('score')
+            ) {
+              const val = row[k];
+              if (val && typeof val === 'string' && val.trim()) {
+                bulletList.push(val.trim());
+              }
+            }
+          });
+        }
+        return bulletList;
+      })(),
       // --- Images ---
       images: mode === 'bol'
         ? [
@@ -587,6 +623,7 @@ export default function App() {
                                       master={auditResults[idx].auditResult.title.master}
                                       live={auditResults[idx].auditResult.title.live}
                                       similarity={auditResults[idx].auditResult.title.similarity}
+                                      match={auditResults[idx].auditResult.title.match}
                                     />
 
                                     <ComparisonItem 
@@ -595,6 +632,7 @@ export default function App() {
                                       live={auditResults[idx].auditResult.description.live}
                                       similarity={auditResults[idx].auditResult.description.similarity}
                                       status={auditResults[idx].auditResult.description.status}
+                                      match={auditResults[idx].auditResult.description.match}
                                       isLongText
                                     />
 
@@ -613,7 +651,8 @@ export default function App() {
                                               master={b.master}
                                               live={b.live}
                                               similarity={b.similarity}
-                                              mini
+                                              match={b.match}
+                                              mini={b.match}
                                             />
                                           ))
                                         )}
@@ -936,7 +975,7 @@ function HighlightDiff({ master, live }: { master: string, live: string }) {
   );
 }
 
-function ComparisonItem({ label, master, live, similarity, status, isLongText = false, mini = false }: any) {
+function ComparisonItem({ label, master, live, similarity, status, isLongText = false, mini = false, match }: any) {
   const [expanded, setExpanded] = useState(false);
   const isImage = live && live.startsWith('IMAGE:');
   const isAPlusImages = live && live.startsWith('APLUS_IMAGES:');
@@ -957,7 +996,7 @@ function ComparisonItem({ label, master, live, similarity, status, isLongText = 
     } catch (e) {}
   }
   
-  const isMatch = similarity > 0.99;
+  const isMatch = match !== undefined ? match : similarity > 0.99;
   const simColor = isMatch ? 'text-green-600 bg-green-50' : similarity > 0.7 ? 'text-yellow-600 bg-yellow-50' : 'text-red-600 bg-red-50';
 
   return (
