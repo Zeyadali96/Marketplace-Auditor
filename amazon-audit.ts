@@ -25,6 +25,14 @@ export async function tryAmazonViaGemini(asin: string, domain: string): Promise<
 
     const prompt = `Perform a google search for "site:${domain}/dp/${asin}" or search for "Amazon ${asin} on ${domain}".
 Locate the official product page on ${domain}.
+
+You are strictly instructed to find:
+- The exact current price on Amazon (e.g. 14.99).
+- The accurate shipping/delivery timeframe / shipping speed message.
+- The actual Buybox seller name (the seller listed under "Sold by" or "Verkauf durch" or "Vendido por").
+
+Do not make up or hallucinate any values. If an attribute cannot be found, set it to "N/A" rather than leaving it empty.
+
 Extract and return a single, exact JSON object with the following schema:
 {
   "title": "exact full product title on Amazon",
@@ -33,11 +41,11 @@ Extract and return a single, exact JSON object with the following schema:
   "description": "product description details or key features, first 500 characters",
   "images": ["image url 1", "image url 2"],
   "bullets": ["feature point 1", "feature point 2"],
-  "buyboxOwner": "The seller name. If sold by Amazon, return 'Amazon'. If sold by a 3rd party, return the 3rd party seller name.",
+  "buyboxOwner": "The seller name. If sold by Amazon, return 'Amazon'. If sold by a 3rd party, return the 3rd party seller name. DO NOT leave as N/A if it can be found.",
   "variations": 0,
   "hasAPlus": false
 }
-Make sure all details (pricing, title, shipping, buyboxOwner) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No conversational helper text, no markdown other than \`\`\`json.`;
+Make sure all details (pricing, title, shipping, buyboxOwner) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No other conversational text, no other markdown text. Ensure it is wrapped in an exact \`\`\`json markdown block.`;
 
     const response = await genai.models.generateContent({
       model: 'gemini-3.5-flash',
@@ -200,64 +208,88 @@ export async function performAmazonAudit(master: any, live: any, domain?: string
 }
 
 // Main Amazon Audit Pipeline Function
-export async function auditAmazon(asin: string, marketplace: string, masterData: any) {
-  let browser;
+export async function scrapperAmazon(url: string, domain: string, locConfig: any): Promise<{ content: string; browser: any }> {
+  const proxyServer = process.env.PROXY_SERVER;
+  
+  const launchOptions: any = {
+    args: [
+      '--no-sandbox', 
+      '--disable-setuid-sandbox', 
+      '--disable-dev-shm-usage', 
+      '--disable-gpu', 
+      '--single-process',
+      '--disable-blink-features=AutomationControlled'
+    ]
+  };
+
+  if (proxyServer) {
+    launchOptions.proxy = {
+      server: proxyServer,
+      username: process.env.PROXY_USERNAME,
+      password: process.env.PROXY_PASSWORD,
+    };
+  }
+
+  const browser = await chromium.launch(launchOptions).catch(err => {
+    console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
+    throw new Error(`Browser launch failed. Error: ${err.message}`);
+  });
+
   try {
-    const domain = marketplace || 'amazon.com';
-    const url = `https://www.${domain}/dp/${asin}`;
-    
-    const proxyServer = process.env.PROXY_SERVER;
-    
-    const launchOptions: any = {
-      args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox', 
-        '--disable-dev-shm-usage', 
-        '--disable-gpu', 
-        '--single-process',
-        '--disable-blink-features=AutomationControlled'
-      ]
+    // Generate regional residential IPs mapping to bypass IP filters
+    const geoIps: Record<string, string> = {
+      'amazon.co.uk': '109.169.130.1',
+      'amazon.de': '109.250.0.12',
+      'amazon.fr': '194.254.129.1',
+      'amazon.it': '2.224.0.1',
+      'amazon.es': '80.58.61.250',
+      'amazon.nl': '145.97.0.1',
+      'amazon.pl': '193.0.96.12',
+      'amazon.se': '155.4.0.1',
+      'amazon.com.be': '193.190.198.1',
+      'amazon.com': '12.203.111.99'
     };
+    const regionIp = geoIps[domain] || '12.203.111.99';
 
-    if (proxyServer) {
-      launchOptions.proxy = {
-        server: proxyServer,
-        username: process.env.PROXY_USERNAME,
-        password: process.env.PROXY_PASSWORD,
-      };
-    }
-
-    browser = await chromium.launch(launchOptions).catch(err => {
-      console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
-      throw new Error(`Browser launch failed. Error: ${err.message}`);
-    });
-
-    const amazonLocalizationMap: Record<string, { locale: string; timezoneId: string; city: string; zip: string; currency: string; countryCode?: string; deliverTo: string[] }> = {
-      'amazon.co.uk': { locale: 'en-GB', timezoneId: 'Europe/London', city: 'LND', zip: 'SW1A 1AA', currency: 'GBP', countryCode: 'GB', deliverTo: ['Deliver to', 'Livre à'] },
-      'amazon.de': { locale: 'de-DE', timezoneId: 'Europe/Berlin', city: 'BER', zip: '10117', currency: 'EUR', countryCode: 'DE', deliverTo: ['Lieferung nach', 'Liefern an', 'Deliver to'] },
-      'amazon.fr': { locale: 'fr-FR', timezoneId: 'Europe/Paris', city: 'PAR', zip: '75001', currency: 'EUR', countryCode: 'FR', deliverTo: ['Livrer à', 'Livraison à', 'Deliver to'] },
-      'amazon.it': { locale: 'it-IT', timezoneId: 'Europe/Rome', city: 'ROM', zip: '00118', currency: 'EUR', countryCode: 'IT', deliverTo: ['Invia a', 'Consegna a', 'Deliver to'] },
-      'amazon.es': { locale: 'es-ES', timezoneId: 'Europe/Madrid', city: 'MAD', zip: '28001', currency: 'EUR', countryCode: 'ES', deliverTo: ['Enviar a', 'Entrega en', 'Deliver to'] },
-      'amazon.nl': { locale: 'nl-NL', timezoneId: 'Europe/Amsterdam', city: 'AMS', zip: '1011 AB', currency: 'EUR', countryCode: 'NL', deliverTo: ['Bezorgen in', 'Deliver to'] },
-      'amazon.pl': { locale: 'pl-PL', timezoneId: 'Europe/Warsaw', city: 'WAW', zip: '00-001', currency: 'PLN', countryCode: 'PL', deliverTo: ['Dostawa do', 'Wyślij do', 'Deliver to'] },
-      'amazon.se': { locale: 'sv-SE', timezoneId: 'Europe/Stockholm', city: 'STO', zip: '111 20', currency: 'SEK', countryCode: 'SE', deliverTo: ['Skicka till', 'Leverera till', 'Deliver to'] },
-      'amazon.com.be': { locale: 'nl-BE', timezoneId: 'Europe/Brussels', city: 'BRU', zip: '1000', currency: 'EUR', countryCode: 'BE', deliverTo: ['Bezorgen in', 'Livrer à', 'Deliver to'] },
-    };
-
-    const locConfig = amazonLocalizationMap[domain] || { locale: 'en-US', timezoneId: 'America/New_York', city: 'NYC', zip: '10001', currency: 'USD', deliverTo: ['Deliver to'] };
-
+    // Anti-bot optimized headers, user-agents, and viewports
     const context = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
       viewport: { width: 1920, height: 1080 },
       locale: locConfig.locale,
       timezoneId: locConfig.timezoneId,
+      permissions: ['geolocation'],
+      geolocation: { 
+        latitude: domain === 'amazon.co.uk' ? 51.5074 : 
+                  domain === 'amazon.de' ? 52.5200 :
+                  domain === 'amazon.fr' ? 48.8566 :
+                  domain === 'amazon.it' ? 41.9028 :
+                  domain === 'amazon.es' ? 40.4168 :
+                  domain === 'amazon.nl' ? 52.3676 :
+                  domain === 'amazon.pl' ? 52.2297 :
+                  domain === 'amazon.se' ? 59.3293 :
+                  domain === 'amazon.com.be' ? 50.8503 : 40.7128, 
+        longitude: domain === 'amazon.co.uk' ? -0.1278 : 
+                   domain === 'amazon.de' ? 13.4050 :
+                   domain === 'amazon.fr' ? 2.3522 :
+                   domain === 'amazon.it' ? 12.4964 :
+                   domain === 'amazon.es' ? -3.7037 :
+                   domain === 'amazon.nl' ? 4.9041 :
+                   domain === 'amazon.pl' ? 21.0122 :
+                   domain === 'amazon.se' ? 18.0686 :
+                   domain === 'amazon.com.be' ? 4.3517 : -74.0060, 
+        accuracy: 100 
+      },
       extraHTTPHeaders: {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Language': `${locConfig.locale},${locConfig.locale.split('-')[0]};q=0.9,en;q=0.8`,
         'Upgrade-Insecure-Requests': '1',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-User': '?1',
-        'Sec-Fetch-Dest': 'document'
+        'Sec-Fetch-Dest': 'document',
+        'X-Forwarded-For': regionIp,
+        'Client-IP': regionIp,
+        'X-Real-IP': regionIp
       },
       ignoreHTTPSErrors: true
     });
@@ -274,6 +306,7 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
 
     const page = await context.newPage();
     
+    // Route Aborting Optimizer (blocks heavy non-essential media assets)
     await page.route('**/*', (route) => {
       const rUrl = route.request().url();
       const resourceType = route.request().resourceType();
@@ -295,278 +328,160 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
       return route.continue();
     });
 
+    console.log(`[scrapperAmazon] Navigating pure Amazon Context to ${url}`);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
     try {
-      console.log(`Auditing Amazon ${asin} on ${domain} (Target Zip: ${locConfig.zip})...`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      
-      try {
-        const cookieButtons = ['#sp-cc-accept', 'input[name="accept"]', '#cookie-accept', '#accept-cookies', '.a-button-inner input[data-action="accept-cookies"]'];
-        for (const selector of cookieButtons) {
-          if (await page.isVisible(selector)) {
-            await page.click(selector).catch(() => null);
-            await page.waitForTimeout(500);
-            break;
-          }
+      const cookieButtons = ['#sp-cc-accept', 'input[name="accept"]', '#cookie-accept', '#accept-cookies', '.a-button-inner input[data-action="accept-cookies"]'];
+      for (const selector of cookieButtons) {
+        if (await page.isVisible(selector)) {
+          await page.click(selector).catch(() => null);
+          await page.waitForTimeout(500);
+          break;
         }
-      } catch (err) { /* ignored */ }
+      }
+    } catch (_) {}
 
-      try {
-        console.log(`UI Regional Unlock: Evaluating postcode injection for ${domain} (Target: ${locConfig.zip})`);
-        
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          const isRegionalLocked = await page.evaluate(({ zip }) => {
-            const slot = document.querySelector('#nav-global-location-slot');
-            if (!slot) return true;
-            const text = slot.textContent || '';
-            const zipFirstPart = zip.split(/[\s-]+/)[0];
-            return !text.toLowerCase().includes(zip.toLowerCase()) && !text.toLowerCase().includes(zipFirstPart.toLowerCase());
-          }, { zip: locConfig.zip });
-
-          if (!isRegionalLocked) {
-            console.log(`Location successfully verified as applied! Slot is set to: ${locConfig.zip}`);
-            break;
-          }
-
-          console.log(`Location slot text doesn't contain ${locConfig.zip} (Attempt ${attempt}/3). Performing injection steps...`);
-          
-          const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 10000 }).catch(() => null);
-          let popoverOpened = false;
-          
-          if (locBtn) {
-            for (let clickAttempt = 1; clickAttempt <= 3; clickAttempt++) {
-              console.log(`Clicking location button (attempt ${clickAttempt})...`);
-              await locBtn.click({ force: true }).catch(() => null);
-              await page.waitForTimeout(1500);
-              const isVisible = await page.locator('.a-popover-modal, .a-popover, #GLUXZipUpdateInput, #GLUXZipUpdateInput_0, #GLUXCountryList').isVisible().catch(() => false);
-              if (isVisible) {
-                popoverOpened = true;
-                break;
-              }
-            }
-          }
-
-          if (!popoverOpened) {
-            console.warn('Popover never opened.');
-            break;
-          }
-
-          const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip" i], input[aria-label*="postcode" i], input[aria-label*="code" i], input[name="zipCode" i]';
-          const countryListSelector = '#GLUXCountryList';
-          
-          await page.waitForSelector(`${zipInputSelector}, ${countryListSelector}`, { state: 'visible', timeout: 5000 }).catch(() => null);
-          
-          let zipInput = await page.$(zipInputSelector);
-          let zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
-          
-          if (!zipVisible) {
-            console.log('Zip input not immediately visible, handling country select or list fallback...');
-            const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
-            
-            if (countryListVisible && locConfig.countryCode) {
-              console.log(`Country dropdown detected. Attempting to select country: ${locConfig.countryCode}`);
-              
-              let selectedVal = null;
-              try {
-                const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => 
-                  opts.map(o => ({ value: o.value, text: o.textContent?.trim() || "" }))
-                );
-                const targetCode = locConfig.countryCode.toLowerCase();
-                const matchByVal = options.find(o => o.value.toLowerCase() === targetCode);
-                if (matchByVal) {
-                  selectedVal = matchByVal.value;
-                } else {
-                  const countryNamesMap: Record<string, string[]> = {
-                    'GB': ['united kingdom', 'royaume-uni', 'vereinigt', 'regno unito', 'reino unido', 'wielka brytania', 'storbritannien', 'england'],
-                    'FR': ['france', 'frankreich', 'francia'],
-                    'DE': ['germany', 'deutschland', 'allemagne', 'germania', 'niemcy', 'tyskland'],
-                    'IT': ['italy', 'itálie', 'italie', 'italien', 'italia', 'włochy'],
-                    'ES': ['spain', 'spanien', 'espagne', 'spagna', 'españa', 'hiszpania'],
-                    'PL': ['poland', 'polen', 'pologne', 'polonia', 'polska'],
-                    'NL': ['netherlands', 'niederlande', 'pays-bas', 'paesi bassi', 'países bajos', 'holandia', 'nederländerna', 'nederland'],
-                    'SE': ['sweden', 'schweden', 'suède', 'svezia', 'suecia', 'szwecja', 'sverige']
-                  };
-                  const names = countryNamesMap[locConfig.countryCode] || [];
-                  const matchByName = options.find(o => {
-                    const txt = o.text.toLowerCase();
-                    return names.some(n => txt.includes(n));
-                  });
-                  if (matchByName) {
-                    selectedVal = matchByName.value;
-                  }
-                }
-              } catch (e: any) {
-                console.warn("Failed to read country options:", e.message);
-              }
-              
-              if (selectedVal) {
-                console.log(`Selecting country option: ${selectedVal}`);
-                await page.selectOption(countryListSelector, { value: selectedVal }).catch(() => null);
-              } else {
-                console.log(`Fallback selecting country code: ${locConfig.countryCode}`);
-                await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
-              }
-              
-              await page.waitForTimeout(1000);
-              const countryApplySelectors = [
-                '#GLUXCountryListDropdown .a-button-input',
-                'input[aria-labelledby="GLUXCountryList-announce"]',
-                '#GLUXCountryList-announce ~ input',
-                '.a-popover-footer input[type="submit"]',
-                '.a-popover-footer .a-button-input',
-                'button[name="glowDoneButton"]',
-                '#a-popover-1 .a-button-input',
-                '.a-popover-footer input'
-              ];
-              let countryApplied = false;
-              for (const sel of countryApplySelectors) {
-                try {
-                  const btn = await page.$(sel);
-                  if (btn && await btn.isVisible()) {
-                    await btn.click({ force: true });
-                    countryApplied = true;
-                    console.log(`Country applied via: ${sel}`);
-                    break;
-                  }
-                } catch (_) {}
-              }
-              if (!countryApplied) {
-                await page.keyboard.press('Enter').catch(() => null);
-              }
-              await page.waitForTimeout(2500);
-              await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
-              
-              try {
-                const dismissBtn = await page.$('button[name="glowDoneButton"], #GLUXConfirmClose input');
-                if (dismissBtn && await dismissBtn.isVisible()) {
-                  await dismissBtn.click({ force: true });
-                  await page.waitForTimeout(1000);
-                }
-              } catch (_) {}
-
-              console.log(`Reloading ${domain} after country selection...`);
-              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-            }
-          }
-
-          zipInput = await page.$(zipInputSelector);
-          zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
-
-          if (zipInput && zipVisible) {
-            console.log(`Entering zip code/postcode: "${locConfig.zip}"`);
-            await zipInput.click({ clickCount: 3 }).catch(() => null);
-            await page.keyboard.press('Backspace').catch(() => null);
-            await zipInput.fill('');
-            await zipInput.type(locConfig.zip, { delay: 50 });
-            await page.waitForTimeout(500);
-            
-            const applySelectors = [
-              '#GLUXZipUpdate input[type="submit"]',
-              '#GLUXZipUpdate .a-button-input',
-              '#GLUXZipUpdate > span > input',
-              '#GLUXZipUpdate_Buttons input',
-              '#GLUXZipUpdate_Buttons span.a-button-inner input',
-              '#GLUXZipUpdate input',
-              'input[aria-labelledby="GLUXZipUpdate-announce"]',
-              '#GLUXZipUpdate-announce ~ input'
-            ];
-            let applied = false;
-            for (const sel of applySelectors) {
-              try {
-                const btn = await page.$(sel);
-                if (btn && await btn.isVisible()) {
-                  await btn.click({ force: true });
-                  applied = true;
-                  console.log(`Apply clicked via: ${sel}`);
-                  break;
-                }
-              } catch (_) {}
-            }
-            if (!applied) {
-              await page.keyboard.press('Enter').catch(() => null);
-            }
-            
-            await page.waitForTimeout(2000);
-            const confirmSelectors = [
-              '#GLUXConfirmClose input',
-              '#GLUXConfirmClose .a-button-input',
-              'input[data-action="GLUXConfirmResponse"]',
-              '#GLUXConfirmClose-announce',
-              'button[name="glowDoneButton"]',
-              '.a-popover-footer .a-button-input',
-              '.a-popover-footer input',
-              'button:has-text("Done")',
-              'button:has-text("Confirm")',
-              'button:has-text("Continue")',
-              'input[type="button"]:has-text("Done")',
-              'span.a-button:has-text("Done") input',
-              'span.a-button:has-text("Continue") input'
-            ];
-            for (const sel of confirmSelectors) {
-              try {
-                const btn = await page.$(sel);
-                if (btn && await btn.isVisible()) {
-                  await btn.click({ force: true });
-                  console.log(`Confirmed done button via: ${sel}`);
-                  break;
-                }
-              } catch (_) {}
-            }
-            await page.waitForTimeout(1500);
-            console.log(`Reloading ${domain} after postcode updates to finalize location change...`);
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-          } else {
-            console.warn('Zip input became unavailable or skipped after country select.');
-          }
-        }
-
-        await page.waitForTimeout(800);
-        const finalLocText = await page.evaluate(() => {
+    try {
+      console.log(`[scrapperAmazon] UI Regional Unlock: Evaluating postcode injection for ${domain} (Target: ${locConfig.zip})`);
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const isRegionalLocked = await page.evaluate(({ zip }) => {
           const slot = document.querySelector('#nav-global-location-slot');
-          return slot ? slot.textContent?.replace(/\s+/g, ' ').trim() : '';
-        }).catch(() => '');
-        console.log(`Location slot after injection: "${finalLocText}"`);
-      } catch (err: any) {
-        console.warn("Location UI injection skipped or failed:", err.message);
-      }
+          if (!slot) return true;
+          const text = slot.textContent || '';
+          const zipFirstPart = zip.split(/[\s-]+/)[0];
+          return !text.toLowerCase().includes(zip.toLowerCase()) && !text.toLowerCase().includes(zipFirstPart.toLowerCase());
+        }, { zip: locConfig.zip });
 
-      await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+        if (!isRegionalLocked) {
+          console.log(`[scrapperAmazon] Location verified as applied: ${locConfig.zip}`);
+          break;
+        }
 
-      try {
-        const oneTimeSelectors = [
-          '#newAccordionRow_header',
-          '#newAccordionRow',
-          '#oneTimeBuyBox_feature_div',
-          '#buyNewSection_header',
-          '#oneTimeBuyBox',
-          '#buyBoxAccordion .a-accordion-row:not(#subscribeAndSaveAccordionRow) .a-accordion-header',
-          '#buyBoxAccordion div[id*="oneTime"]',
-          'div[id*="oneTimeBuyBox"]',
-          '.oneTimeBuyBox',
-          'input[id*="oneTime"]'
-        ];
-        for (const selector of oneTimeSelectors) {
-          const btn = await page.$(selector);
-          if (btn && await btn.isVisible()) {
-            const isSelected = await page.evaluate((el: any) => {
-              return el.classList.contains('a-accordion-row-active') || el.classList.contains('active') || !!el.querySelector('.a-accordion-row-active');
-            }, btn).catch(() => false);
-            
-            if (!isSelected) {
-              console.log(`Clicking One-Time Purchase header/accordion via: ${selector}`);
-              await btn.click({ force: true });
-              await page.waitForTimeout(1500);
+        console.log(`[scrapperAmazon] Postal code text mismatch. Attempting injection (${attempt}/3)...`);
+        const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 10000 }).catch(() => null);
+        let popoverOpened = false;
+
+        if (locBtn) {
+          for (let clickAttempt = 1; clickAttempt <= 3; clickAttempt++) {
+            await locBtn.click({ force: true }).catch(() => null);
+            await page.waitForTimeout(1500);
+            const isVisible = await page.locator('.a-popover-modal, .a-popover, #GLUXZipUpdateInput, #GLUXZipUpdateInput_0, #GLUXCountryList').isVisible().catch(() => false);
+            if (isVisible) {
+              popoverOpened = true;
+              break;
             }
-            break;
           }
         }
-      } catch (err: any) {
-        console.warn("Could not click One-Time Purchase accordion:", err.message);
+
+        if (!popoverOpened) break;
+
+        const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip" i], input[aria-label*="postcode" i], input[aria-label*="code" i], input[name="zipCode" i]';
+        const countryListSelector = '#GLUXCountryList';
+        
+        await page.waitForSelector(`${zipInputSelector}, ${countryListSelector}`, { state: 'visible', timeout: 5000 }).catch(() => null);
+        
+        let zipInput = await page.$(zipInputSelector);
+        let zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
+
+        if (!zipVisible) {
+          const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
+          if (countryListVisible && locConfig.countryCode) {
+            let selectedVal = null;
+            try {
+              const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => 
+                opts.map(o => ({ value: o.value, text: o.textContent?.trim() || "" }))
+              );
+              const targetCode = locConfig.countryCode.toLowerCase();
+              const matchByVal = options.find(o => o.value.toLowerCase() === targetCode);
+              if (matchByVal) selectedVal = matchByVal.value;
+            } catch (_) {}
+
+            if (selectedVal) {
+              await page.selectOption(countryListSelector, { value: selectedVal }).catch(() => null);
+            } else {
+              await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
+            }
+            await page.waitForTimeout(1000);
+            await page.keyboard.press('Enter').catch(() => null);
+            await page.waitForTimeout(2500);
+            await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+          }
+        }
+
+        zipInput = await page.$(zipInputSelector);
+        zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
+
+        if (zipInput && zipVisible) {
+          await zipInput.click({ clickCount: 3 }).catch(() => null);
+          await page.keyboard.press('Backspace').catch(() => null);
+          await zipInput.fill('');
+          await zipInput.type(locConfig.zip, { delay: 50 });
+          await page.waitForTimeout(500);
+          await page.keyboard.press('Enter').catch(() => null);
+          await page.waitForTimeout(2000);
+          
+          const confirmBtn = await page.$('#GLUXConfirmClose input, button[name="glowDoneButton"]');
+          if (confirmBtn && await confirmBtn.isVisible()) {
+            await confirmBtn.click({ force: true });
+            await page.waitForTimeout(1000);
+          }
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+        }
       }
-    } catch (e: any) {
-      console.error("Navigation error:", e.message);
-    }
+    } catch (_) {}
+
+    try {
+      const oneTimeSelectors = ['#newAccordionRow_header', '#oneTimeBuyBox_feature_div', '#buyNewSection_header', '#oneTimeBuyBox'];
+      for (const s of oneTimeSelectors) {
+        const btn = await page.$(s);
+        if (btn && await btn.isVisible()) {
+          const isSelected = await page.evaluate((el: any) => {
+            return el.classList.contains('a-accordion-row-active') || el.classList.contains('active');
+          }, btn).catch(() => false);
+          if (!isSelected) {
+            await btn.click({ force: true });
+            await page.waitForTimeout(1500);
+          }
+          break;
+        }
+      }
+    } catch (_) {}
 
     const content = await page.content();
+    return { content, browser };
+
+  } catch (err: any) {
+    await browser.close().catch(() => null);
+    throw err;
+  }
+}
+
+// Main Amazon Audit Pipeline Function
+export async function auditAmazon(asin: string, marketplace: string, masterData: any) {
+  let browser;
+  try {
+    const domain = marketplace || 'amazon.com';
+    const url = `https://www.${domain}/dp/${asin}`;
+
+    const amazonLocalizationMap: Record<string, { locale: string; timezoneId: string; city: string; zip: string; currency: string; countryCode?: string; deliverTo: string[] }> = {
+      'amazon.co.uk': { locale: 'en-GB', timezoneId: 'Europe/London', city: 'LND', zip: 'SW1A 1AA', currency: 'GBP', countryCode: 'GB', deliverTo: ['Deliver to', 'Livre à'] },
+      'amazon.de': { locale: 'de-DE', timezoneId: 'Europe/Berlin', city: 'BER', zip: '10117', currency: 'EUR', countryCode: 'DE', deliverTo: ['Lieferung nach', 'Liefern an', 'Deliver to'] },
+      'amazon.fr': { locale: 'fr-FR', timezoneId: 'Europe/Paris', city: 'PAR', zip: '75001', currency: 'EUR', countryCode: 'FR', deliverTo: ['Livrer à', 'Livraison à', 'Deliver to'] },
+      'amazon.it': { locale: 'it-IT', timezoneId: 'Europe/Rome', city: 'ROM', zip: '00118', currency: 'EUR', countryCode: 'IT', deliverTo: ['Invia a', 'Consegna a', 'Deliver to'] },
+      'amazon.es': { locale: 'es-ES', timezoneId: 'Europe/Madrid', city: 'MAD', zip: '28001', currency: 'EUR', countryCode: 'ES', deliverTo: ['Enviar a', 'Entrega en', 'Deliver to'] },
+      'amazon.nl': { locale: 'nl-NL', timezoneId: 'Europe/Amsterdam', city: 'AMS', zip: '1011 AB', currency: 'EUR', countryCode: 'NL', deliverTo: ['Bezorgen in', 'Deliver to'] },
+      'amazon.pl': { locale: 'pl-PL', timezoneId: 'Europe/Warsaw', city: 'WAW', zip: '00-001', currency: 'PLN', countryCode: 'PL', deliverTo: ['Dostawa do', 'Wyślij do', 'Deliver to'] },
+      'amazon.se': { locale: 'sv-SE', timezoneId: 'Europe/Stockholm', city: 'STO', zip: '111 20', currency: 'SEK', countryCode: 'SE', deliverTo: ['Skicka till', 'Leverera till', 'Deliver to'] },
+      'amazon.com.be': { locale: 'nl-BE', timezoneId: 'Europe/Brussels', city: 'BRU', zip: '1000', currency: 'EUR', countryCode: 'BE', deliverTo: ['Bezorgen in', 'Livrer à', 'Deliver to'] },
+    };
+
+    const locConfig = amazonLocalizationMap[domain] || { locale: 'en-US', timezoneId: 'America/New_York', city: 'NYC', zip: '10001', currency: 'USD', deliverTo: ['Deliver to'] };
+
+    const scraperResult = await scrapperAmazon(url, domain, locConfig);
+    browser = scraperResult.browser;
+    const content = scraperResult.content;
     const $ = cheerio.load(content);
 
     let amazonTitle = $('#productTitle').text().trim();
@@ -1371,11 +1286,16 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
       amazonTitle.toLowerCase().includes('robot') || 
       amazonTitle.toLowerCase().includes('captcha') || 
       amazonTitle.toLowerCase().includes('unusual traffic') ||
+      amazonTitle.toLowerCase().includes('automated access') ||
       amazonTitle.length < 3 ||
       !amazonPrice || 
       amazonPrice === 'N/A' || 
+      shippingDays === 'N/A' ||
+      !rawShippingTime || 
+      rawShippingTime === 'N/A' ||
       !amazonBuyboxOwner || 
-      amazonBuyboxOwner === 'N/A' ||
+      amazonBuyboxOwner === 'N/A' || 
+      amazonBuyboxOwner.trim() === '' ||
       amazonBullets.length === 0;
 
     if (isScrapingIncomplete) {

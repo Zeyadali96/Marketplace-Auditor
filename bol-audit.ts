@@ -852,6 +852,105 @@ export async function performBolAudit(master: any, live: any) {
 }
 
 // Main Bol Audit Function
+export async function scrapperBol(ean: string): Promise<{ data: any; browser: any }> {
+  const launchOpts: any = {
+    headless: false,
+    args: [
+      '--headless=new',
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--window-size=1920,1080',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-infobars',
+      '--disable-extensions',
+      '--disable-default-apps',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--password-store=basic',
+      '--use-mock-keychain',
+      '--incognito'
+    ]
+  };
+
+  const proxyServer = process.env.PROXY_SERVER;
+  if (proxyServer) {
+    launchOpts.proxy = {
+      server: proxyServer,
+      username: process.env.PROXY_USERNAME,
+      password: process.env.PROXY_PASSWORD
+    };
+  }
+
+  const browser = await chromiumExtra.launch(launchOpts);
+
+  try {
+    const screenWidth = Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366;
+    const screenHeight = Math.floor(Math.random() * (1080 - 768 + 1)) + 768;
+
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+      viewport: { width: screenWidth, height: screenHeight },
+      screen: { width: screenWidth, height: screenHeight },
+      locale: 'nl-NL',
+      timezoneId: 'Europe/Amsterdam',
+      colorScheme: 'light',
+      extraHTTPHeaders: {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
+        'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-ch-ua-platform-version': '"15.0.0"',
+        'sec-ch-ua-full-version-list': '"Chromium";v="136.0.7103.114", "Google Chrome";v="136.0.7103.114", "Not-A.Brand";v="99.0.0.0"',
+        'upgrade-insecure-requests': '1',
+        'sec-fetch-site': 'none',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-user': '?1',
+        'sec-fetch-dest': 'document',
+        'cache-control': 'max-age=0',
+        'DNT': '1'
+      }
+    });
+
+    // Pre-inject OneTrust consent cookies
+    await context.addCookies([
+      { name: 'consent_cookie', value: '1', domain: '.bol.com', path: '/', sameSite: 'Lax' },
+      { name: 'accept_all_cookies', value: 'true', domain: '.bol.com', path: '/', sameSite: 'Lax' },
+      {
+        name: 'OptanonAlertBoxClosed',
+        value: new Date().toISOString(),
+        domain: '.bol.com',
+        path: '/',
+        sameSite: 'Lax'
+      },
+      {
+        name: 'OptanonConsent',
+        value: 'isIABGlobal=false&datestamp=' +
+          encodeURIComponent(new Date().toUTCString()) +
+          '&version=202209.1.0&hosts=&consentId=' +
+          Math.random().toString(36).substring(2) +
+          '&interactionCount=1&landingPath=NotLandingPage&groups=C0001%3A1%2CC0002%3A0%2CC0003%3A0%2CC0004%3A0&geolocation=NL%3BNH&AwaitingReconsent=false',
+        domain: '.bol.com',
+        path: '/',
+        sameSite: 'Lax'
+      }
+    ]);
+
+    const page = await context.newPage();
+    await goToProduct(page, ean);
+    const data = await extractCatalogue(page);
+    return { data, browser };
+
+  } catch (err: any) {
+    await browser.close().catch(() => null);
+    throw err;
+  }
+}
+
 export async function auditBol(ean: string, masterData: any) {
   let browser;
   try {
@@ -877,96 +976,9 @@ export async function auditBol(ean: string, masterData: any) {
         await new Promise(resolve => setTimeout(resolve, 2000));
         console.log('[BOL] Trying Strategy 2: Playwright stealth browser...');
 
-        const launchOpts: any = {
-          headless: false,
-          args: [
-            '--headless=new',
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--window-size=1920,1080',
-            '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-infobars',
-            '--disable-extensions',
-            '--disable-default-apps',
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--password-store=basic',
-            '--use-mock-keychain',
-            '--incognito'
-          ]
-        };
-
-        const proxyServer = process.env.PROXY_SERVER;
-        if (proxyServer) {
-          launchOpts.proxy = {
-            server: proxyServer,
-            username: process.env.PROXY_USERNAME,
-            password: process.env.PROXY_PASSWORD
-          };
-        }
-
-        browser = await chromiumExtra.launch(launchOpts);
-
-        const screenWidth = Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366;
-        const screenHeight = Math.floor(Math.random() * (1080 - 768 + 1)) + 768;
-
-        const context = await browser.newContext({
-          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-          viewport: { width: screenWidth, height: screenHeight },
-          screen: { width: screenWidth, height: screenHeight },
-          locale: 'nl-NL',
-          timezoneId: 'Europe/Amsterdam',
-          colorScheme: 'light',
-          extraHTTPHeaders: {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br, zstd',
-            'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'sec-ch-ua-platform-version': '"15.0.0"',
-            'sec-ch-ua-full-version-list': '"Chromium";v="136.0.7103.114", "Google Chrome";v="136.0.7103.114", "Not-A.Brand";v="99.0.0.0"',
-            'upgrade-insecure-requests': '1',
-            'sec-fetch-site': 'none',
-            'sec-fetch-mode': 'navigate',
-            'sec-fetch-user': '?1',
-            'sec-fetch-dest': 'document',
-            'cache-control': 'max-age=0',
-            'DNT': '1'
-          }
-        });
-
-        // Pre-inject OneTrust consent cookies
-        await context.addCookies([
-          { name: 'consent_cookie', value: '1', domain: '.bol.com', path: '/', sameSite: 'Lax' },
-          { name: 'accept_all_cookies', value: 'true', domain: '.bol.com', path: '/', sameSite: 'Lax' },
-          {
-            name: 'OptanonAlertBoxClosed',
-            value: new Date().toISOString(),
-            domain: '.bol.com',
-            path: '/',
-            sameSite: 'Lax'
-          },
-          {
-            name: 'OptanonConsent',
-            value: 'isIABGlobal=false&datestamp=' +
-              encodeURIComponent(new Date().toUTCString()) +
-              '&version=202209.1.0&hosts=&consentId=' +
-              Math.random().toString(36).substring(2) +
-              '&interactionCount=1&landingPath=NotLandingPage&groups=C0001%3A1%2CC0002%3A0%2CC0003%3A0%2CC0004%3A0&geolocation=NL%3BNH&AwaitingReconsent=false',
-            domain: '.bol.com',
-            path: '/',
-            sameSite: 'Lax'
-          }
-        ]);
-
-        const page = await context.newPage();
-
-        await goToProduct(page, ean);
-        data = await extractCatalogue(page);
+        const scrapeResult = await scrapperBol(ean);
+        data = scrapeResult.data;
+        browser = scrapeResult.browser;
         dataSource = 'browser';
       } catch (browserError: any) {
         console.error("[BOL] Browser strategy failed:", browserError.message);
