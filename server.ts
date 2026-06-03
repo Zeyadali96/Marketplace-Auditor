@@ -1450,7 +1450,7 @@ app.post("/api/audit/amazon", async (req, res) => {
       images: Array.from(new Set(uniqueImages))
     };
 
-    const auditResult = await performAudit(masterData, liveData, 'amazon', domain);
+    const auditResult = await performAmazonAudit(masterData, liveData, domain);
     res.json({ liveData, auditResult });
 
   } catch (error: any) {
@@ -1461,8 +1461,8 @@ app.post("/api/audit/amazon", async (req, res) => {
   }
 });
 
-// Helper for performAudit
-async function performAudit(master: any, live: any, mode: string, domain?: string) {
+// Helper for Amazon Audit
+async function performAmazonAudit(master: any, live: any, domain?: string) {
   const result: any = {
     title: { master: master.title, live: live.title, similarity: getSimilarity(master.title, live.title), match: false },
     description: { 
@@ -1572,15 +1572,119 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
 
   // Score calculation
   let scoreValue = 0;
-  if (mode === 'amazon') {
-    if (result.title.match) scoreValue += 30;
-    if (result.description.match) scoreValue += 30;
-    const bulletMatchCount = (result.bullets || []).filter((b: any) => b.match).length;
-    scoreValue += Math.min(bulletMatchCount * 8, 40);
-  } else {
-    if (result.title.match) scoreValue += 50;
-    if (result.description.match) scoreValue += 50;
-  }
+  if (result.title.match) scoreValue += 30;
+  if (result.description.match) scoreValue += 30;
+  const bulletMatchCount = (result.bullets || []).filter((b: any) => b.match).length;
+  scoreValue += Math.min(bulletMatchCount * 8, 40);
+  result.score = scoreValue;
+
+  return result;
+}
+
+// Helper for Bol Audit
+async function performBolAudit(master: any, live: any) {
+  const result: any = {
+    title: { master: master.title, live: live.title, similarity: getSimilarity(master.title, live.title), match: false },
+    description: { 
+      master: master.description, 
+      live: live.description || "", 
+      similarity: 0, 
+      match: false, 
+      isAPlus: false 
+    },
+    bullets: [],
+    price: { master: master.price, live: live.price, match: false },
+    shipping: { master: master.shipping, live: live.shipping, match: false, days: live.shippingDays },
+    images: { master: master.images, live: live.images, match: false },
+    variations: { match: live.variations > 1 }
+  };
+
+  result.description.similarity = getSimilarity(master.description || "", live.description || "");
+  if (result.description.similarity > 0.6) result.description.match = true;
+
+  if (result.title.similarity > 0.8) result.title.match = true;
+  
+  // Bullets match and alignment for Bol
+  const masterBullets = Array.isArray(master.bullets) ? master.bullets.filter(Boolean) : [];
+  const liveBullets = Array.isArray(live.bullets) ? live.bullets.filter(Boolean) : [];
+  const bulletsResults: any[] = [];
+  const matchedLiveIndices = new Set<number>();
+
+  masterBullets.forEach((mb: string, mIdx: number) => {
+    let bestSim = 0;
+    let bestLiveIndex = -1;
+    
+    liveBullets.forEach((lb: string, idx: number) => {
+      if (matchedLiveIndices.has(idx)) return;
+      const sim = getSimilarity(mb, lb);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestLiveIndex = idx;
+      }
+    });
+
+    if (bestLiveIndex !== -1 && bestSim > 0.3) {
+      matchedLiveIndices.add(bestLiveIndex);
+      bulletsResults.push({
+        master: mb,
+        live: liveBullets[bestLiveIndex],
+        similarity: bestSim,
+        match: bestSim > 0.7
+      });
+    } else {
+      let fallbackLive = "";
+      if (mIdx < liveBullets.length && !matchedLiveIndices.has(mIdx)) {
+        fallbackLive = liveBullets[mIdx];
+        matchedLiveIndices.add(mIdx);
+      } else {
+        const unmatchedIdx = liveBullets.findIndex((_, idx) => !matchedLiveIndices.has(idx));
+        if (unmatchedIdx !== -1) {
+          fallbackLive = liveBullets[unmatchedIdx];
+          matchedLiveIndices.add(unmatchedIdx);
+        }
+      }
+
+      bulletsResults.push({
+        master: mb,
+        live: fallbackLive,
+        similarity: fallbackLive ? getSimilarity(mb, fallbackLive) : 0,
+        match: false
+      });
+    }
+  });
+
+  liveBullets.forEach((lb: string, idx: number) => {
+    if (matchedLiveIndices.has(idx)) return;
+    
+    const unfilledRow = bulletsResults.find(r => r.master && !r.live);
+    if (unfilledRow) {
+      unfilledRow.live = lb;
+      unfilledRow.similarity = getSimilarity(unfilledRow.master, lb);
+      unfilledRow.match = unfilledRow.similarity > 0.7;
+      matchedLiveIndices.add(idx);
+    } else {
+      bulletsResults.push({
+        master: "",
+        live: lb,
+        similarity: 0,
+        match: false
+      });
+    }
+  });
+
+  result.bullets = bulletsResults;
+
+  // Price match (fuzzy)
+  const masterPriceNum = parseFloat(String(master.price || "").replace(/[^0-9.]/g, '')) || 0;
+  const livePriceNum = parseFloat(String(live.price || "").replace(/[^0-9.]/g, '')) || 0;
+  if (masterPriceNum > 0 && Math.abs(masterPriceNum - livePriceNum) < 1.0) result.price.match = true;
+
+  if (live.images && live.images.length >= (master.images?.length || 1)) result.images.match = true;
+
+  // Score calculation
+  let scoreValue = 0;
+  if (result.title.match) scoreValue += 50;
+  if (result.description.match) scoreValue += 50;
   result.score = scoreValue;
 
   return result;
@@ -1674,7 +1778,7 @@ Make sure all details (pricing, title, shipping, buyboxOwner) are fully grounded
 // Gemini's googleSearch tool performs web search queries via Google's engine.
 // Since Google's crawl engines are not blocked by Akamai, this completely bypasses WAF limitations.
 // Requires GEMINI_API_KEY env var (already used by the app).
-async function tryBolViaGemini(ean: string): Promise<any | null> {
+async function tryBolViaGemini(ean: string, masterTitle?: string): Promise<any | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     console.log('[BOL GEMINI] No GEMINI_API_KEY found, skipping.');
@@ -1693,9 +1797,13 @@ async function tryBolViaGemini(ean: string): Promise<any | null> {
 
     console.log('[BOL GEMINI] Generating content with googleSearch grounding for EAN:', ean);
 
-    const prompt = `Perform a google search for "bol.com product ${ean}" or search for "${ean}" directly on bol.com.
-Locate the official product page on bol.com.
-Extract and return a single, exact JSON object with the following schema:
+    const prompt = `You are a professional product intelligence scraper for bol.com.
+Follow these steps to locate the correct product details:
+1. Search Google for "site:bol.com ${ean}" or search bol.com for this EAN.
+2. If that search yields very few results or does not find the specific product page, search Google for "site:bol.com ${masterTitle || ''}" or search bol.com for this product name together with EAN "${ean}".
+3. Locate the official product listing page on bol.com that matches the product.
+4. Extract the exact product details from the page.
+5. Return ONLY a single, exact JSON object matching the following schema. Make sure no other conversational text, no markdown other than \`\`\`json exists in the response:
 {
   "title": "exact full product title on bol.com",
   "price": "correct numerical price string e.g. 14.99",
@@ -1704,9 +1812,11 @@ Extract and return a single, exact JSON object with the following schema:
   "images": ["image url 1", "image url 2"],
   "bullets": ["feature point 1", "feature point 2"],
   "productUrl": "the direct final product link on bol.com",
-  "liveVariations": "variation options if any, else empty string"
+  "liveVariations": "variation options if any, else empty string",
+  "buyboxOwner": "The seller name (verkocht door). Defaults to 'bol.com' if sold by them."
 }
-Make sure all details (pricing, title, shipping) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No conversational helper text, no markdown other than \`\`\`json.`;
+
+Ensure all extracted values (pricing, title, shipping) are fully grounded in search results.`;
 
     const response = await genai.models.generateContent({
       model: 'gemini-3.5-flash',
@@ -2322,7 +2432,7 @@ app.post("/api/audit/bol", async (req, res) => {
 
     // ── Strategy 1: Gemini Google Search Grounding ─────────────────────────
     console.log('[BOL] Trying Strategy 1: Gemini Google Search Grounding...');
-    data = await tryBolViaGemini(ean);
+    data = await tryBolViaGemini(ean, masterData?.title);
     if (data) {
       console.log('[BOL] Strategy 1 succeeded via Gemini.');
       dataSource = 'gemini';
@@ -2331,101 +2441,119 @@ app.post("/api/audit/bol", async (req, res) => {
     // ── Strategy 2: Playwright stealth browser (hardened) ─────────────────────
     // Add delay before browser strategy to reduce rapid-fire requests
     if (!data) {
-      console.log('[BOL] Adding 2-second delay before browser strategy to avoid WAF detection...');
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      console.log('[BOL] Trying Strategy 2: Playwright stealth browser...');
+      try {
+        console.log('[BOL] Adding 2-second delay before browser strategy to avoid WAF detection...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log('[BOL] Trying Strategy 2: Playwright stealth browser...');
 
-      const launchOpts: any = {
-        headless: false,
-        args: [
-          '--headless=new',
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--window-size=1920,1080',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--disable-infobars',
-          '--disable-extensions',
-          '--disable-default-apps',
-          '--no-first-run',
-          '--no-default-browser-check',
-          '--password-store=basic',
-          '--use-mock-keychain',
-          '--incognito'
-        ]
-      };
-
-      const proxyServer = process.env.PROXY_SERVER;
-      if (proxyServer) {
-        launchOpts.proxy = {
-          server: proxyServer,
-          username: process.env.PROXY_USERNAME,
-          password: process.env.PROXY_PASSWORD
+        const launchOpts: any = {
+          headless: false,
+          args: [
+            '--headless=new',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--window-size=1920,1080',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-infobars',
+            '--disable-extensions',
+            '--disable-default-apps',
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--password-store=basic',
+            '--use-mock-keychain',
+            '--incognito'
+          ]
         };
+
+        const proxyServer = process.env.PROXY_SERVER;
+        if (proxyServer) {
+          launchOpts.proxy = {
+            server: proxyServer,
+            username: process.env.PROXY_USERNAME,
+            password: process.env.PROXY_PASSWORD
+          };
+        }
+
+        browser = await chromiumExtra.launch(launchOpts);
+
+        const screenWidth = Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366;
+        const screenHeight = Math.floor(Math.random() * (1080 - 768 + 1)) + 768;
+
+        const context = await browser.newContext({
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+          viewport: { width: screenWidth, height: screenHeight },
+          screen: { width: screenWidth, height: screenHeight },
+          locale: 'nl-NL',
+          timezoneId: 'Europe/Amsterdam',
+          colorScheme: 'light',
+          extraHTTPHeaders: {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-ch-ua-platform-version': '"15.0.0"',
+            'sec-ch-ua-full-version-list': '"Chromium";v="136.0.7103.114", "Google Chrome";v="136.0.7103.114", "Not-A.Brand";v="99.0.0.0"',
+            'upgrade-insecure-requests': '1',
+            'sec-fetch-site': 'none',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-user': '?1',
+            'sec-fetch-dest': 'document',
+            'cache-control': 'max-age=0',
+            'DNT': '1'
+          }
+        });
+
+        // Pre-inject OneTrust consent cookies to skip cookie consent redirect
+        await context.addCookies([
+          { name: 'consent_cookie', value: '1', domain: '.bol.com', path: '/', sameSite: 'Lax' },
+          { name: 'accept_all_cookies', value: 'true', domain: '.bol.com', path: '/', sameSite: 'Lax' },
+          {
+            name: 'OptanonAlertBoxClosed',
+            value: new Date().toISOString(),
+            domain: '.bol.com',
+            path: '/',
+            sameSite: 'Lax'
+          },
+          {
+            name: 'OptanonConsent',
+            value: 'isIABGlobal=false&datestamp=' +
+              encodeURIComponent(new Date().toUTCString()) +
+              '&version=202209.1.0&hosts=&consentId=' +
+              Math.random().toString(36).substring(2) +
+              '&interactionCount=1&landingPath=NotLandingPage&groups=C0001%3A1%2CC0002%3A0%2CC0003%3A0%2CC0004%3A0&geolocation=NL%3BNH&AwaitingReconsent=false',
+            domain: '.bol.com',
+            path: '/',
+            sameSite: 'Lax'
+          }
+        ]);
+
+        const page = await context.newPage();
+
+        await goToProduct(page, ean);
+        data = await extractCatalogue(page);
+        dataSource = 'browser';
+      } catch (browserError: any) {
+        console.error("[BOL] Browser strategy failed:", browserError.message);
+        
+        // If the browser was blocked by WAF, attempt recovery via relaxed Gemini search
+        if (browserError.message.includes('WAF_BLOCKED') || browserError.message.includes('anti-bot') || browserError.message.includes('blocked')) {
+          console.log('[BOL] Browser block detected. Attempting recovery via relaxed Gemini Google Search Grounding...');
+          data = await tryBolViaGemini(ean, masterData?.title);
+          if (data && data.title) {
+            console.log('[BOL WAF RECOVERY] Re-running Gemini Grounding was successful.');
+            dataSource = 'gemini-recovery-after-waf';
+          } else {
+            throw browserError;
+          }
+        } else {
+          throw browserError;
+        }
       }
-
-      browser = await chromiumExtra.launch(launchOpts);
-
-      const screenWidth = Math.floor(Math.random() * (1920 - 1366 + 1)) + 1366;
-      const screenHeight = Math.floor(Math.random() * (1080 - 768 + 1)) + 768;
-
-      const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-        viewport: { width: screenWidth, height: screenHeight },
-        screen: { width: screenWidth, height: screenHeight },
-        locale: 'nl-NL',
-        timezoneId: 'Europe/Amsterdam',
-        colorScheme: 'light',
-        extraHTTPHeaders: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Accept-Encoding': 'gzip, deflate, br, zstd',
-          'sec-ch-ua': '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"',
-          'sec-ch-ua-mobile': '?0',
-          'sec-ch-ua-platform': '"Windows"',
-          'sec-ch-ua-platform-version': '"15.0.0"',
-          'sec-ch-ua-full-version-list': '"Chromium";v="136.0.7103.114", "Google Chrome";v="136.0.7103.114", "Not-A.Brand";v="99.0.0.0"',
-          'upgrade-insecure-requests': '1',
-          'sec-fetch-site': 'none',
-          'sec-fetch-mode': 'navigate',
-          'sec-fetch-user': '?1',
-          'sec-fetch-dest': 'document',
-          'cache-control': 'max-age=0',
-          'DNT': '1'
-        }
-      });
-
-      // Pre-inject OneTrust consent cookies to skip cookie consent redirect
-      await context.addCookies([
-        { name: 'consent_cookie', value: '1', domain: '.bol.com', path: '/', sameSite: 'Lax' },
-        { name: 'accept_all_cookies', value: 'true', domain: '.bol.com', path: '/', sameSite: 'Lax' },
-        {
-          name: 'OptanonAlertBoxClosed',
-          value: new Date().toISOString(),
-          domain: '.bol.com',
-          path: '/',
-          sameSite: 'Lax'
-        },
-        {
-          name: 'OptanonConsent',
-          value: 'isIABGlobal=false&datestamp=' +
-            encodeURIComponent(new Date().toUTCString()) +
-            '&version=202209.1.0&hosts=&consentId=' +
-            Math.random().toString(36).substring(2) +
-            '&interactionCount=1&landingPath=NotLandingPage&groups=C0001%3A1%2CC0002%3A0%2CC0003%3A0%2CC0004%3A0&geolocation=NL%3BNH&AwaitingReconsent=false',
-          domain: '.bol.com',
-          path: '/',
-          sameSite: 'Lax'
-        }
-      ]);
-
-      const page = await context.newPage();
-
-      await goToProduct(page, ean);
-      data = await extractCatalogue(page);
-      dataSource = 'browser';
     }
 
     const bolShippingDays = calculateBolShippingDays(data.shipping || '');
@@ -2448,7 +2576,7 @@ app.post("/api/audit/bol", async (req, res) => {
       _dataSource: dataSource
     };
 
-    const auditResult = await performAudit(masterData, liveData, 'bol');
+    const auditResult = await performBolAudit(masterData, liveData);
     res.json({ liveData, auditResult });
 
   } catch (error: any) {
