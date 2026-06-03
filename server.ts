@@ -800,7 +800,7 @@ app.post("/api/audit/amazon", async (req, res) => {
     let amazonDesc = $('#productDescription').text().trim();
     if (!amazonDesc) amazonDesc = $('#feature-bullets').text().trim();
     
-    const hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
+    let hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
     // --- 3. Buybox Owner Extraction (Tiered Priority Resolver) ---
     let amazonBuyboxOwner = "";
@@ -1007,7 +1007,7 @@ app.post("/api/audit/amazon", async (req, res) => {
       imageMap.set(info.baseId, info.url);
     });
 
-    const uniqueImages = Array.from(imageMap.values());
+    let uniqueImages = Array.from(imageMap.values());
     console.log("\nFinal unique images count:", uniqueImages.length);
     console.log("Final baseIds:", Array.from(imageMap.keys()));
     console.log("=== END DEBUG ===\n");
@@ -1164,7 +1164,7 @@ app.post("/api/audit/amazon", async (req, res) => {
       }
     });
 
-    const amazonBullets = Array.from(bulletSet);
+    let amazonBullets = Array.from(bulletSet);
 
     const variationsSet = new Set<string>();
     // Detect variations from standard twister elements
@@ -1235,7 +1235,7 @@ app.post("/api/audit/amazon", async (req, res) => {
       });
     }
 
-    const variationsCount = variationsSet.size;
+    let variationsCount = variationsSet.size;
 
     // Calculate shipping days difference
     let shippingDays = "N/A";
@@ -1363,6 +1363,77 @@ app.post("/api/audit/amazon", async (req, res) => {
       console.warn("Shipping days calculation failed:", e.message);
     }
 
+    // ── FALLBACK STRATEGY: Gemini Google Search Grounding ────────────────────
+    const isScrapingIncomplete = 
+      !amazonTitle || 
+      amazonTitle.toLowerCase().includes('robot') || 
+      amazonTitle.toLowerCase().includes('captcha') || 
+      amazonTitle.toLowerCase().includes('unusual traffic') ||
+      amazonTitle.length < 3 ||
+      !amazonPrice || 
+      amazonPrice === 'N/A' || 
+      !amazonBuyboxOwner || 
+      amazonBuyboxOwner === 'N/A' ||
+      amazonBullets.length === 0;
+
+    if (isScrapingIncomplete) {
+      console.log('[AMAZON] Scraped data is incomplete or empty. Trying Gemini Google Search Grounding fallback...');
+      const geminiData = await tryAmazonViaGemini(asin, domain);
+      if (geminiData && geminiData.title) {
+        console.log('[AMAZON] Gemini Fallback Succeeded.');
+        if (!amazonTitle || amazonTitle.toLowerCase().includes('robot') || amazonTitle.toLowerCase().includes('captcha') || amazonTitle.toLowerCase().includes('unusual traffic') || amazonTitle.length < 3) {
+          amazonTitle = geminiData.title;
+        }
+        if (geminiData.price && (!amazonPrice || amazonPrice === 'N/A')) {
+          amazonPrice = cleanAndNormalizePrice(geminiData.price);
+        }
+        if (geminiData.description && (!amazonDesc || amazonDesc.length < 5)) {
+          amazonDesc = geminiData.description;
+        }
+        if (geminiData.buyboxOwner && (!amazonBuyboxOwner || amazonBuyboxOwner === 'N/A')) {
+          amazonBuyboxOwner = geminiData.buyboxOwner;
+        }
+        if (geminiData.bullets && geminiData.bullets.length > 0 && amazonBullets.length === 0) {
+          amazonBullets = geminiData.bullets;
+        }
+        if (geminiData.images && geminiData.images.length > 0 && uniqueImages.length === 0) {
+          uniqueImages = geminiData.images;
+        }
+        if (geminiData.hasAPlus !== undefined && !hasAPlus) {
+          hasAPlus = geminiData.hasAPlus;
+        }
+        if (geminiData.variations !== undefined && variationsCount <= 1) {
+          variationsCount = typeof geminiData.variations === 'number' ? geminiData.variations : parseInt(geminiData.variations) || 0;
+        }
+        if (geminiData.shipping && (!rawShippingTime || rawShippingTime === 'N/A')) {
+          rawShippingTime = geminiData.shipping;
+          try {
+            const raw = rawShippingTime.toLowerCase();
+            if (raw.includes('today') || raw.includes('vandaag') || raw.includes('aujourd') ||
+                raw.includes('oggi') || raw.includes('heute')) {
+              shippingDays = "0";
+            } else if (raw.includes('tomorrow') || raw.includes('morgen') || raw.includes('demain') ||
+                       raw.includes('domani') || raw.includes('jutro') || raw.includes('mañana') ||
+                       raw.includes('imorgon')) {
+              shippingDays = "1";
+            } else if (raw.includes('overmorgen') || raw.includes('après-demain') || raw.includes('dopodomani')) {
+              shippingDays = "2";
+            } else {
+              const rangeMatch = raw.match(/(\d+)\s*[-–]\s*(\d+)/);
+              const singleMatch = raw.match(/(\d+)/);
+              if (rangeMatch) {
+                shippingDays = rangeMatch[2];
+              } else if (singleMatch) {
+                shippingDays = singleMatch[1];
+              }
+            }
+          } catch (shErr) {
+            console.warn("Fallback shipping days parse failed:", shErr);
+          }
+        }
+      }
+    }
+
     const liveData = {
       title: amazonTitle,
       description: amazonDesc,
@@ -1425,7 +1496,7 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
   const matchedLiveIndices = new Set<number>();
 
   // 1. Pair up each master bullet with the best matching (highest similarity) live bullet
-  masterBullets.forEach((mb: string) => {
+  masterBullets.forEach((mb: string, mIdx: number) => {
     let bestSim = 0;
     let bestLiveIndex = -1;
     
@@ -1447,10 +1518,24 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
         match: bestSim > 0.7
       });
     } else {
+      // It's a mismatch! Let's pair it with the corresponding live bullet by index if available and unmatched,
+      // or the first available unmatched live bullet, instead of returning an empty string.
+      let fallbackLive = "";
+      if (mIdx < liveBullets.length && !matchedLiveIndices.has(mIdx)) {
+        fallbackLive = liveBullets[mIdx];
+        matchedLiveIndices.add(mIdx);
+      } else {
+        const unmatchedIdx = liveBullets.findIndex((_, idx) => !matchedLiveIndices.has(idx));
+        if (unmatchedIdx !== -1) {
+          fallbackLive = liveBullets[unmatchedIdx];
+          matchedLiveIndices.add(unmatchedIdx);
+        }
+      }
+
       bulletsResults.push({
         master: mb,
-        live: "",
-        similarity: 0,
+        live: fallbackLive,
+        similarity: fallbackLive ? getSimilarity(mb, fallbackLive) : 0,
         match: false
       });
     }
@@ -1465,6 +1550,7 @@ async function performAudit(master: any, live: any, mode: string, domain?: strin
       unfilledRow.live = lb;
       unfilledRow.similarity = getSimilarity(unfilledRow.master, lb);
       unfilledRow.match = unfilledRow.similarity > 0.7;
+      matchedLiveIndices.add(idx);
     } else {
       bulletsResults.push({
         master: "",
@@ -1504,6 +1590,82 @@ function getScoreGrade(score: number): string {
   if (score > 70) return "excellent";
   if (score >= 50) return "acceptable";
   return "Needs improvement";
+}
+
+// ── AMAZON STRATEGY: Gemini Google Search Grounding ─────────────────────────
+async function tryAmazonViaGemini(asin: string, domain: string): Promise<any | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.log('[AMAZON GEMINI] No GEMINI_API_KEY found, skipping.');
+    return null;
+  }
+
+  try {
+    const genai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+
+    console.log(`[AMAZON GEMINI] Generating content with googleSearch grounding for ASIN: ${asin} on ${domain}`);
+
+    const prompt = `Perform a google search for "site:${domain}/dp/${asin}" or search for "Amazon ${asin} on ${domain}".
+Locate the official product page on ${domain}.
+Extract and return a single, exact JSON object with the following schema:
+{
+  "title": "exact full product title on Amazon",
+  "price": "correct numerical price string e.g. 14.99 of the primary default offer",
+  "shipping": "correct standard free delivery message / shipping time, e.g. 'Standard-Lieferung am Freitag, 22. Mai' or 'Wednesday, May 27' (do NOT use Prime expedited/fastest, just the standard free delivery message)",
+  "description": "product description details or key features, first 500 characters",
+  "images": ["image url 1", "image url 2"],
+  "bullets": ["feature point 1", "feature point 2"],
+  "buyboxOwner": "The seller name. If sold by Amazon, return 'Amazon'. If sold by a 3rd party, return the 3rd party seller name.",
+  "variations": 0,
+  "hasAPlus": false
+}
+Make sure all details (pricing, title, shipping, buyboxOwner) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No conversational helper text, no markdown other than \`\`\`json.`;
+
+    const response = await genai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: prompt,
+      config: {
+        tools: [{ googleSearch: {} }],
+        temperature: 0.1,
+      }
+    });
+
+    const rawText = response.text?.trim() || '';
+    console.log('[AMAZON GEMINI] Raw response length:', rawText.length);
+
+    const jsonText = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+
+    try {
+      const parsed = JSON.parse(jsonText);
+      if (parsed && parsed.title) {
+        parsed._source = 'gemini-google-search';
+        return parsed;
+      }
+    } catch (parseErr) {
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const extracted = JSON.parse(jsonMatch[0]);
+          if (extracted && extracted.title) {
+            extracted._source = 'gemini-google-search';
+            return extracted;
+          }
+        } catch (_) {}
+      }
+      console.log('[AMAZON GEMINI] JSON parse failed:', parseErr);
+    }
+  } catch (e: any) {
+    console.log('[AMAZON GEMINI] Strategy failed:', e.message);
+  }
+
+  return null;
 }
 
 // --- Bol.com Helpers ---
