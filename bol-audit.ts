@@ -1,7 +1,17 @@
 import { chromium as chromiumExtra } from 'playwright-extra';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import { GoogleGenAI, Type } from '@google/genai';
-import { getSimilarity } from './helpers.ts';
+import { getSimilarity, cleanAndNormalizePrice } from './helpers.ts';
+
+function isRailwayDeployment(): boolean {
+  return !!(
+    process.env.RAILWAY_STATIC_URL ||
+    process.env.RAILWAY_ENVIRONMENT ||
+    process.env.RAILWAY_SERVICE_ID ||
+    process.env.PORT_BOL_SCRAPE_DIRECT_PROHIBITED ||
+    process.env.NODE_ENV === 'production'
+  );
+}
 
 // Register standard browser stealth plugins on the extra chromium instance
 try {
@@ -649,6 +659,34 @@ export async function extractCatalogue(page: any) {
        }
     }
 
+    let buyboxOwner = 'bol.com';
+    const sellerSelector = [
+      '[data-test="seller-link"]',
+      'a[data-test="seller-link"]',
+      '.buy-block__seller-name a',
+      '.pdp-seller-link',
+      'a[id*="seller"]',
+      'span[class*="seller"]'
+    ];
+    for (const sel of sellerSelector) {
+      const el = document.querySelector(sel);
+      if (el) {
+        const txt = (el as HTMLElement).innerText.trim();
+        if (txt) {
+          buyboxOwner = txt;
+          break;
+        }
+      }
+    }
+    if (buyboxOwner === 'bol.com') {
+      const allText = document.body.innerText;
+      const soldByMatch = allText.match(/verkocht\s+door\s*:?\s*([^\n\r]+)/i) || 
+                          allText.match(/verkoop\s+door\s*:?\s*([^\n\r]+)/i);
+      if (soldByMatch) {
+        buyboxOwner = soldByMatch[1].trim();
+      }
+    }
+
     return {
       title,
       description,
@@ -656,7 +694,8 @@ export async function extractCatalogue(page: any) {
       shipping,
       images: Array.from(new Set(imgs)),
       bullets: Array.from(bulletSet),
-      liveVariations: variationsData
+      liveVariations: variationsData,
+      buyboxOwner
     };
   });
 }
@@ -800,8 +839,10 @@ export async function performBolAudit(master: any, live: any) {
 
   result.bullets = bulletsResults;
 
-  const masterPriceNum = parseFloat(String(master.price || "").replace(/[^0-9.]/g, '')) || 0;
-  const livePriceNum = parseFloat(String(live.price || "").replace(/[^0-9.]/g, '')) || 0;
+  const masterPriceCleaned = cleanAndNormalizePrice(String(master.price || ""));
+  const livePriceCleaned = cleanAndNormalizePrice(String(live.price || ""));
+  const masterPriceNum = parseFloat(masterPriceCleaned) || 0;
+  const livePriceNum = parseFloat(livePriceCleaned) || 0;
   if (masterPriceNum > 0 && Math.abs(masterPriceNum - livePriceNum) < 1.0) result.price.match = true;
 
   if (live.images && live.images.length >= (master.images?.length || 1)) result.images.match = true;
@@ -820,6 +861,10 @@ export async function auditBol(ean: string, masterData: any) {
   try {
     let data: any = null;
     let dataSource = 'browser';
+
+    if (isRailwayDeployment()) {
+      console.log('[BOL] Railway environment detected. Activating prioritised WAF-evasion routing (Gemini Search Grounding via Google to bypass Akamai IP restrictions).');
+    }
 
     // ── Strategy 1: Gemini Google Search Grounding ─────────────────────────
     console.log('[BOL] Trying Strategy 1: Gemini Google Search Grounding...');
@@ -951,6 +996,7 @@ export async function auditBol(ean: string, masterData: any) {
     const liveData = {
       title: data.title || '',
       price: data.price || 'N/A',
+      buyboxOwner: data.buyboxOwner || 'bol.com',
       description: data.description || '',
       images: data.images || [],
       url: data.productUrl || data.url || '',
