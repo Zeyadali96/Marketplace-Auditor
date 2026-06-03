@@ -1,6 +1,6 @@
 import { chromium as chromiumExtra } from 'playwright-extra';
 import stealth from 'puppeteer-extra-plugin-stealth';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { getSimilarity } from './helpers.ts';
 
 // Register standard browser stealth plugins on the extra chromium instance
@@ -31,25 +31,15 @@ export async function tryBolViaGemini(ean: string, masterTitle?: string): Promis
     console.log('[BOL GEMINI] Generating content with googleSearch grounding for EAN:', ean);
 
     const prompt = `You are a professional product intelligence scraper for bol.com.
-Follow these steps to locate the correct product details:
-1. Search Google for "site:bol.com ${ean}" or search bol.com for this EAN.
-2. If that search yields very few results or does not find the specific product page, search Google for "site:bol.com ${masterTitle || ''}" or search bol.com for this product name together with EAN "${ean}".
-3. Locate the official product listing page on bol.com that matches the product.
-4. Extract the exact product details from the page.
-5. Return ONLY a single, exact JSON object matching the following schema. Make sure no other conversational text, no markdown other than \`\`\`json exists in the response:
-{
-  "title": "exact full product title on bol.com",
-  "price": "correct numerical price string e.g. 14.99",
-  "shipping": "correct shipping time/delivery message e.g. 'Morgen in huis' or 'Uiterlijk donderdag 22 mei'",
-  "description": "product description details, first 500 characters",
-  "images": ["image url 1", "image url 2"],
-  "bullets": ["feature point 1", "feature point 2"],
-  "productUrl": "the direct final product link on bol.com",
-  "liveVariations": "variation options if any, else empty string",
-  "buyboxOwner": "The seller name (verkocht door). Defaults to 'bol.com' if sold by them."
-}
+Locate the correct product matching the EAN "${ean}" and product title "${masterTitle || ''}".
 
-Ensure all extracted values (pricing, title, shipping) are fully grounded in search results.`;
+Please follow these exact steps to find the product:
+1. Search Google using Google Search tool for 'site:bol.com "${ean}"' or 'bol.com ${ean}'.
+2. If that search yields very few results or does not find the specific product page, search Google for 'site:bol.com "${masterTitle || ''}"' or search for 'site:bol.com ${ean} ${masterTitle || ''}'.
+3. Find the official product listing page on bol.com and extract information.
+4. Extract the live attributes of the product: title, price, shipping time message, description, bullet points, image URLs, product URL, variations, and buyboxOwner (seller name). Ensure they are fully grounded in search results.
+
+Fill in the exact product details into the requested JSON schema. Do not make up or hallucinate any values. If an attribute cannot be found, set it to "N/A" rather than leaving it empty.`;
 
     const response = await genai.models.generateContent({
       model: 'gemini-3.5-flash',
@@ -57,32 +47,101 @@ Ensure all extracted values (pricing, title, shipping) are fully grounded in sea
       config: {
         tools: [{ googleSearch: {} }],
         temperature: 0.1,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { 
+              type: Type.STRING, 
+              description: "The exact, full product title on bol.com. Match the live page exactly." 
+            },
+            price: { 
+              type: Type.STRING, 
+              description: "The live price of the product on bol.com, e.g., '14.99'. Do not include currency symbols." 
+            },
+            shipping: { 
+              type: Type.STRING, 
+              description: "The delivery text / shipping message on bol.com, e.g., 'Morgen in huis', 'Uiterlijk donderdag 22 mei', or '2-3 werkdagen'. Do NOT make this up." 
+            },
+            description: { 
+              type: Type.STRING, 
+              description: "The product description, first 500 characters." 
+            },
+            images: { 
+              type: Type.ARRAY, 
+              items: { type: Type.STRING },
+              description: "An array of image URLs found on bol.com listing page." 
+            },
+            bullets: { 
+              type: Type.ARRAY, 
+              items: { type: Type.STRING },
+              description: "An array of bullet points or product features from the page." 
+            },
+            productUrl: { 
+              type: Type.STRING, 
+              description: "The direct URL of the product page matching this EAN on bol.com." 
+            },
+            liveVariations: { 
+              type: Type.STRING, 
+              description: "Variation options if any (e.g., sizes, colors), else empty string." 
+            },
+            buyboxOwner: { 
+              type: Type.STRING, 
+              description: "The name of the seller (e.g. verkocht door ...). Default to 'bol.com' if sold/shipped by them." 
+            }
+          },
+          required: ["title", "price", "shipping", "productUrl"]
+        }
       }
     });
 
     const rawText = response.text?.trim() || '';
     console.log('[BOL GEMINI] Raw response length:', rawText.length);
 
-    const jsonText = rawText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+    const normalizeParsedData = (obj: any) => {
+      if (!obj) return obj;
+      if (obj.productUrl && typeof obj.productUrl === 'string') {
+        const url = obj.productUrl.trim();
+        if (url && !url.startsWith('http') && !url.startsWith('//')) {
+          obj.productUrl = 'https://www.bol.com' + (url.startsWith('/') ? '' : '/') + url;
+        }
+      }
+      if (Array.isArray(obj.images)) {
+        obj.images = obj.images.map((img: any) => {
+          if (typeof img === 'string') {
+            const trimmed = img.trim();
+            if (trimmed && !trimmed.startsWith('http') && !trimmed.startsWith('//')) {
+              return 'https://www.bol.com' + (trimmed.startsWith('/') ? '' : '/') + trimmed;
+            }
+            return trimmed;
+          }
+          return img;
+        }).filter(Boolean);
+      }
+      return obj;
+    };
 
     try {
-      const parsed = JSON.parse(jsonText);
+      const parsed = JSON.parse(rawText);
       if (parsed && parsed.title) {
-        parsed._source = 'gemini-google-search';
-        return parsed;
+        const finalized = normalizeParsedData(parsed);
+        finalized._source = 'gemini-google-search';
+        return finalized;
       }
     } catch (parseErr) {
+      console.log('[BOL GEMINI] Direct JSON parse failed, trying regex extraction. Raw text:', rawText);
       const jsonMatch = rawText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
           const extracted = JSON.parse(jsonMatch[0]);
           if (extracted && extracted.title) {
-            extracted._source = 'gemini-google-search';
-            return extracted;
+            const finalized = normalizeParsedData(extracted);
+            finalized._source = 'gemini-google-search';
+            return finalized;
           }
         } catch (_) {}
       }
-      console.log('[BOL GEMINI] JSON parse failed:', parseErr);
+      console.log('[BOL GEMINI] Regex JSON parse failed:', parseErr);
     }
   } catch (e: any) {
     console.log('[BOL GEMINI] Strategy failed:', e.message);
