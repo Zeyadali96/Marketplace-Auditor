@@ -21,12 +21,11 @@ try {
 }
 
 // ── BOL STRATEGY 1: Gemini Google Search Grounding ───────────────────────────
-export async function tryBolViaGemini(ean: string, masterTitle?: string): Promise<{ data: any | null; error: string | null }> {
+export async function tryBolViaGemini(ean: string, masterTitle?: string): Promise<any | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    const msg = '[BOL GEMINI] GEMINI_API_KEY environment variable is not set or is empty.';
-    console.log(msg);
-    return { data: null, error: msg };
+    console.log('[BOL GEMINI] No GEMINI_API_KEY found, skipping.');
+    return null;
   }
 
   const prompt = `You are a professional product intelligence scraper for bol.com.
@@ -76,23 +75,24 @@ Ensure all extracted values (pricing, title, shipping) are fully grounded in sea
     return obj;
   };
 
-  // Model fallback list: try in order until one succeeds.
-  // gemini-2.0-flash supports Google Search grounding; gemini-1.5-flash is the proven fallback.
-  const modelsToTry = ['gemini-2.0-flash', 'gemini-1.5-flash'];
-  const maxAttemptsPerModel = 2;
+  const maxAttempts = 3;
   let lastError: any = null;
-  let hardAbort = false; // set to true to break out of both loops immediately
 
-  for (const modelName of modelsToTry) {
-  if (hardAbort) break;
-  for (let attempt = 1; attempt <= maxAttemptsPerModel; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const genai = new GoogleGenAI({ apiKey });
+      const genai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
 
-      console.log(`[BOL GEMINI] Model: ${modelName} | Attempt ${attempt}/${maxAttemptsPerModel} | EAN: ${ean}`);
+      console.log(`[BOL GEMINI] Generating content with googleSearch grounding (attempt ${attempt}/${maxAttempts}) for EAN:`, ean);
 
       const response = await genai.models.generateContent({
-        model: modelName,
+        model: 'gemini-3.5-flash',
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],
@@ -110,7 +110,7 @@ Ensure all extracted values (pricing, title, shipping) are fully grounded in sea
         if (parsed && parsed.title) {
           const finalized = normalizeParsedData(parsed);
           finalized._source = 'gemini-google-search';
-          return { data: finalized, error: null };
+          return finalized;
         }
       } catch (parseErr) {
         console.log('[BOL GEMINI] Direct JSON parse failed, trying regex extraction. Raw text length:', rawText.length);
@@ -121,7 +121,7 @@ Ensure all extracted values (pricing, title, shipping) are fully grounded in sea
             if (extracted && extracted.title) {
               const finalized = normalizeParsedData(extracted);
               finalized._source = 'gemini-google-search';
-              return { data: finalized, error: null };
+              return finalized;
             }
           } catch (_) {}
         }
@@ -141,8 +141,7 @@ Ensure all extracted values (pricing, title, shipping) are fully grounded in sea
         e.message?.includes('BILLING_LIMIT');
 
       if (isHardQuotaExceeded) {
-        console.warn('[BOL GEMINI] Hard Quota / Billing Exceeded detected. Aborting all model attempts.');
-        hardAbort = true;
+        console.warn('[BOL GEMINI] Hard Quota / Billing Exceeded detected. Skipping retry loop to immediately utilize direct stealth browser scraping fallback.');
         break;
       }
 
@@ -152,23 +151,20 @@ Ensure all extracted values (pricing, title, shipping) are fully grounded in sea
         e.message?.includes('quota') || 
         e.message?.includes('limit');
 
-      if (isRateOrQuotaLimit && attempt < maxAttemptsPerModel) {
+      if (isRateOrQuotaLimit && attempt < maxAttempts) {
         const backoffMs = attempt * 5000 + Math.floor(Math.random() * 2000);
-        console.log(`[BOL GEMINI] Transient rate limit on ${modelName}. Retrying in ${backoffMs}ms...`);
+        console.log(`[BOL GEMINI] Transient rate limit detected. Retrying in ${backoffMs}ms...`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
       } else {
-        // Non-recoverable error for this model — break inner loop, try next model
         break;
       }
     }
-  } // end attempt loop
-  } // end model loop
+  }
 
-  const finalMsg = lastError
-    ? `[BOL GEMINI] All attempts exhausted. Last error: ${lastError.message || String(lastError)}`
-    : '[BOL GEMINI] All attempts exhausted. No data returned and no error captured (possible empty response).';
-  console.log(finalMsg);
-  return { data: null, error: finalMsg };
+  if (lastError) {
+    console.log('[BOL GEMINI] All Gemini attempts exhausted. Final error:', lastError.message);
+  }
+  return null;
 }
 
 // ── BOL STRATEGY 2: Playwright stealth browser (hardened backup) ─────────────
@@ -971,33 +967,21 @@ export async function auditBol(ean: string, masterData: any) {
   try {
     let data: any = null;
     let dataSource = 'browser';
-    const onRailway = isRailwayDeployment();
 
-    if (onRailway) {
-      console.log('[BOL] Railway/production environment detected. Using Gemini Search Grounding exclusively (browser scraping skipped — data-center IPs are WAF-blocked by Bol.com Akamai).');
+    if (isRailwayDeployment()) {
+      console.log('[BOL] Railway environment detected. Activating prioritised WAF-evasion routing (Gemini Search Grounding via Google to bypass Akamai IP restrictions).');
     }
 
     // ── Strategy 1: Gemini Google Search Grounding ─────────────────────────
     console.log('[BOL] Trying Strategy 1: Gemini Google Search Grounding...');
-    const geminiResult1 = await tryBolViaGemini(ean, masterData?.title);
-    if (geminiResult1.data) {
-      data = geminiResult1.data;
+    data = await tryBolViaGemini(ean, masterData?.title);
+    if (data) {
       console.log('[BOL] Strategy 1 succeeded via Gemini.');
       dataSource = 'gemini';
-    } else {
-      console.warn('[BOL] Strategy 1 Gemini failed:', geminiResult1.error);
     }
 
-    // ── Strategy 2: Playwright stealth browser (LOCAL / proxy-equipped only) ──
-    // FIX: On Railway/production WITHOUT a proxy configured, browser scraping will
-    // always be WAF-blocked. Hard-skip it to avoid returning a WAF_BLOCKED error
-    // when Gemini already failed. Only attempt browser if:
-    //   (a) not on Railway, OR
-    //   (b) a PROXY_SERVER is configured (residential proxy bypasses Akamai).
-    const hasProxy = !!process.env.PROXY_SERVER;
-    const browserAllowed = !onRailway || hasProxy;
-
-    if (!data && browserAllowed) {
+    // ── Strategy 2: Playwright stealth browser (hardened) ─────────────────────
+    if (!data) {
       try {
         console.log('[BOL] Adding 2-second delay before browser strategy to avoid WAF detection...');
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1010,34 +994,20 @@ export async function auditBol(ean: string, masterData: any) {
       } catch (browserError: any) {
         console.error("[BOL] Browser strategy failed:", browserError.message);
         
+        // Anti-WAF recovery with fallback to Gemini Search grounding (with 2-second timeout)
         if (browserError.message.includes('WAF_BLOCKED') || browserError.message.includes('anti-bot') || browserError.message.includes('blocked')) {
           console.log('[BOL] Browser block detected. Attempting recovery via relaxed Gemini Google Search Grounding...');
-          const geminiRecovery = await tryBolViaGemini(ean, masterData?.title);
-          if (geminiRecovery.data && geminiRecovery.data.title) {
-            data = geminiRecovery.data;
+          data = await tryBolViaGemini(ean, masterData?.title);
+          if (data && data.title) {
             console.log('[BOL WAF RECOVERY] Re-running Gemini Grounding was successful.');
             dataSource = 'gemini-recovery-after-waf';
           } else {
-            console.warn('[BOL WAF RECOVERY] Gemini recovery also failed:', geminiRecovery.error);
             throw browserError;
           }
         } else {
           throw browserError;
         }
       }
-    } else if (!data && !browserAllowed) {
-      // FIX: On Railway without proxy, Gemini was the only option and it failed.
-      // Surface a clear, actionable error rather than attempting a doomed browser scrape.
-      // Collect the actual Gemini error from the last attempt for diagnostics
-      const geminiDiag = await tryBolViaGemini(ean, masterData?.title);
-      const actualReason = geminiDiag.error || 'Unknown Gemini error';
-      throw new Error(
-        `BOL_GEMINI_FAILED: Gemini Google Search Grounding failed and browser scraping is disabled on Railway without a residential proxy. ` +
-        `Gemini error: ${actualReason}. ` +
-        `To fix: (1) Verify GEMINI_API_KEY is set correctly in Railway environment variables, ` +
-        `(2) Confirm the key has Google Search Grounding enabled (check Google AI Studio > API keys > quota), ` +
-        `or (3) Add PROXY_SERVER / PROXY_USERNAME / PROXY_PASSWORD with a residential proxy to enable browser scraping.`
-      );
     }
 
     const bolShippingDays = calculateBolShippingDays(data.shipping || '');
