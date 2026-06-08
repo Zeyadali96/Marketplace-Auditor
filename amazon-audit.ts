@@ -11,11 +11,12 @@ try {
 }
 
 // Helper for Amazon Google Search Grounding Fallback
-export async function tryAmazonViaGemini(asin: string, domain: string): Promise<any | null> {
+export async function tryAmazonViaGemini(asin: string, domain: string): Promise<{ data: any | null; error: string | null }> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    console.log('[AMAZON GEMINI] No GEMINI_API_KEY found, skipping.');
-    return null;
+    const msg = '[AMAZON GEMINI] GEMINI_API_KEY environment variable is not set or is empty.';
+    console.log(msg);
+    return { data: null, error: msg };
   }
 
   try {
@@ -67,7 +68,7 @@ Make sure all details (pricing, title, shipping, buyboxOwner) are fully grounded
       const parsed = JSON.parse(jsonText);
       if (parsed && parsed.title) {
         parsed._source = 'gemini-google-search';
-        return parsed;
+        return { data: parsed, error: null };
       }
     } catch (parseErr) {
       const jsonMatch = rawText.match(/\{[\s\S]*\}/);
@@ -76,17 +77,17 @@ Make sure all details (pricing, title, shipping, buyboxOwner) are fully grounded
           const extracted = JSON.parse(jsonMatch[0]);
           if (extracted && extracted.title) {
             extracted._source = 'gemini-google-search';
-            return extracted;
+            return { data: extracted, error: null };
           }
         } catch (_) {}
       }
       console.log('[AMAZON GEMINI] JSON parse failed:', parseErr);
     }
+    return { data: null, error: 'JSON parsing failed from Gemini output response' };
   } catch (e: any) {
     console.log('[AMAZON GEMINI] Strategy failed:', e.message);
+    return { data: null, error: e.message || String(e) };
   }
-
-  return null;
 }
 
 // Helper to perform the comparison between Master Data and Scraped Live Data
@@ -1280,21 +1281,33 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
     }
 
     // Fallback: Check if scraping is incomplete
+    const pageHtmlLower = content.toLowerCase();
     const isBotBlocked =
       !amazonTitle ||
       amazonTitle.toLowerCase().includes('robot') ||
       amazonTitle.toLowerCase().includes('captcha') ||
       amazonTitle.toLowerCase().includes('unusual traffic') ||
       amazonTitle.toLowerCase().includes('automated access') ||
-      amazonTitle.length < 3;
+      amazonTitle.length < 3 ||
+      pageHtmlLower.includes('automated access') ||
+      pageHtmlLower.includes('robot check') ||
+      pageHtmlLower.includes('captcha') ||
+      pageHtmlLower.includes('/captcha/') ||
+      pageHtmlLower.includes('provide the characters below') ||
+      pageHtmlLower.includes('unusual traffic') ||
+      pageHtmlLower.includes('not a robot');
 
     const isPriceMissing = !amazonPrice || amazonPrice === 'N/A';
 
     const isScrapingIncomplete = isBotBlocked || isPriceMissing;
 
     if (isScrapingIncomplete) {
-      console.log('[AMAZON] Scraped data is incomplete or empty. Trying Gemini Google Search Grounding fallback...');
-      const geminiData = await tryAmazonViaGemini(asin, domain);
+      console.log('[AMAZON] Scraped data is incomplete or empty (Bot blocked or missing price). Trying Gemini Google Search Grounding fallback...');
+      
+      const geminiResult = await tryAmazonViaGemini(asin, domain);
+      const geminiData = geminiResult?.data;
+      const geminiError = geminiResult?.error;
+
       if (geminiData && geminiData.title) {
         console.log('[AMAZON] Gemini Fallback Succeeded.');
         if (isBotBlocked) {
@@ -1347,6 +1360,15 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
             console.warn("Fallback shipping days parse failed:", shErr);
           }
         }
+      } else {
+        const errorReason = geminiError || 'Unknown Gemini fallback error';
+        throw new Error(
+          `AMAZON_GEMINI_FAILED: Amazon browser scraping returned incomplete results (likely due to Amazon anti-bot/IP block or captcha), and Gemini fallback failed. ` +
+          `Gemini error: ${errorReason}. ` +
+          `To fix: (1) Verify GEMINI_API_KEY is set correctly in Railway environment variables, ` +
+          `(2) Confirm the key has Google Search Grounding enabled (check Google AI Studio > API keys > quota), ` +
+          `or (3) Add PROXY_SERVER / PROXY_USERNAME / PROXY_PASSWORD with a residential proxy to enable browser scraping.`
+        );
       }
     }
 
