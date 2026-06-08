@@ -1012,8 +1012,18 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
 
     const bulletSet = new Set<string>();
     const bulletSelectors = [
-      '#feature-bullets ul li span.a-list-item',
-      '#featurebullets_feature_div ul li span.a-list-item'
+      '#feature-bullets ul li:not(:has(ul))',
+      '#featurebullets_feature_div ul li:not(:has(ul))',
+      '#feature-bullets-content li:not(:has(ul))',
+      '[data-feature-name="product-facts"] .a-list-item',
+      '.product-facts-title + .a-unordered-list li:not(:has(ul))',
+      '#product-facts-grid li:not(:has(ul))',
+      '#productFactsDesktopExpander .a-list-item',
+      '#feature-bullets .a-list-item',
+      '#featurebullets_feature_div .a-list-item',
+      '#feature-bullets ul li',
+      '#featurebullets_feature_div ul li',
+      '#aboutThisItem ul.a-unordered-list.a-vertical li'
     ];
 
     $(bulletSelectors.join(', ')).each((_, el) => {
@@ -1085,6 +1095,32 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
           /clasificación/i.test(lower) ||
           /bestsellers/i.test(lower);
 
+        const isTechnicalMeta =
+          /asin\s*:/i.test(lower) ||
+          /ean\s*:/i.test(lower) ||
+          /isbn\s*:/i.test(lower) ||
+          /fabricante\s*:/i.test(lower) ||
+          /hersteller\s*:/i.test(lower) ||
+          /manufacturer\s*:/i.test(lower) ||
+          /brand\s*:/i.test(lower) ||
+          /marca\s*:/i.test(lower) ||
+          /referencia\s+del\s+fabricante/i.test(lower) ||
+          /manufacturer\s+reference/i.test(lower) ||
+          /part\s+number/i.test(lower) ||
+          /número\s+de\s+modelo/i.test(lower) ||
+          /model\s+number/i.test(lower) ||
+          /dimensiones/i.test(lower) ||
+          /dimensions/i.test(lower) ||
+          /peso/i.test(lower) ||
+          /weight/i.test(lower) ||
+          /producto\s+en\s+amazon/i.test(lower) ||
+          /product\s+since/i.test(lower) ||
+          /disponible\s+desde/i.test(lower) ||
+          /available\s+since/i.test(lower) ||
+          /date\s+first\s+available/i.test(lower) ||
+          /opiniones\s+de\s+los/i.test(lower) ||
+          /customer\s+reviews/i.test(lower);
+
         return (
           lower.includes('window.ue') ||
           lower.includes('if(window.ue)') ||
@@ -1107,7 +1143,8 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
           /^(\d+)\s+out of\s+5\s+stars/i.test(t) ||
           /Reviewed in the .* on \d+/.test(t) ||
           /^\d+ ratings?$/.test(t) ||
-          isBSR
+          isBSR ||
+          isTechnicalMeta
         );
       };
 
