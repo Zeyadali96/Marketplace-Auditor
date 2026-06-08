@@ -23,29 +23,39 @@ export async function tryAmazonViaGemini(asin: string, domain: string): Promise<
 
     console.log(`[AMAZON GEMINI] Generating content with googleSearch grounding for ASIN: ${asin} on ${domain}`);
 
-    const prompt = `Perform a google search for "site:${domain}/dp/${asin}" or search for "Amazon ${asin} on ${domain}".
-Locate the official product page on ${domain}.
+    const prompt = `You are a product data extraction assistant with access to Google Search.
+TASK: Find the LIVE product page on ${domain} for ASIN "${asin}" and extract accurate data.
+STEPS:
+1. Use Google Search: search for site:${domain}/dp/${asin} or search for "Amazon ${asin} on ${domain}".
+2. Open the product page result from ${domain} (NOT a cached/preview snippet).
+3. Extract the following fields from the LIVE product page.
+FIELD RULES:
+- "price": The BUY BOX price — the actual price in the main Add-to-Cart section (EUR/GBP/USD depending on domain, do not include currency symbols in the price field itself, just the raw numerical string). NOT the crossed-out list/was price. Extract the exact numerical value (e.g. "14.99").
+- "shipping": The STANDARD FREE delivery message only (look for "Gratis-Lieferung / Kostenlose Lieferung / Free Delivery"). Do NOT use Prime-only expedited delivery or "fastest delivery" messages. Extract just the date part (e.g. "Mittwoch, 11. Juni" or "Wednesday, June 11").
+- "buyboxOwner": The seller shown under "Verkauf durch" or "Sold by" or similar. If it is Amazon itself, return exactly "Amazon". If third-party, return their exact store name. NEVER return "N/A" if it can be found.
+- "title": The full product title as shown on the page.
+- "description": product description details or key features, first 500 characters.
+- "images": list of primary image URLs.
+- "bullets": The bullet-point feature list (array of strings).
+- "variations": number of product variations (integer, e.g. 0).
+- "hasAPlus": boolean indicating whether A+ Content / rich description is present on the page.
 
-You are strictly instructed to find:
-- The exact current price on Amazon (e.g. 14.99).
-- The accurate shipping/delivery timeframe / shipping speed message.
-- The actual Buybox seller name (the seller listed under "Sold by" or "Verkauf durch" or "Vendido por").
+CRITICAL:
+- Do NOT hallucinate or estimate values. Every field must be grounded in what you see on the page.
+- If a value genuinely cannot be found, return "N/A".
 
-Do not make up or hallucinate any values. If an attribute cannot be found, set it to "N/A" rather than leaving it empty.
-
-Extract and return a single, exact JSON object with the following schema:
+Return ONLY this JSON in a \`\`\`json block:
 {
-  "title": "exact full product title on Amazon",
-  "price": "correct numerical price string e.g. 14.99 of the primary default offer",
-  "shipping": "correct standard free delivery message / shipping time, e.g. 'Standard-Lieferung am Freitag, 22. Mai' or 'Wednesday, May 27' (do NOT use Prime expedited/fastest, just the standard free delivery message)",
-  "description": "product description details or key features, first 500 characters",
-  "images": ["image url 1", "image url 2"],
-  "bullets": ["feature point 1", "feature point 2"],
-  "buyboxOwner": "The seller name. If sold by Amazon, return 'Amazon'. If sold by a 3rd party, return the 3rd party seller name. DO NOT leave as N/A if it can be found.",
+  "title": "...",
+  "price": "14.99",
+  "shipping": "Mittwoch, 11. Juni",
+  "buyboxOwner": "Amazon",
+  "description": "...",
+  "images": ["url1", "url2"],
+  "bullets": ["bullet 1", "bullet 2"],
   "variations": 0,
   "hasAPlus": false
-}
-Make sure all details (pricing, title, shipping, buyboxOwner) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No other conversational text, no other markdown text. Ensure it is wrapped in an exact \`\`\`json markdown block.`;
+}`;
 
     const response = await genai.models.generateContent({
       model: 'gemini-3.5-flash',

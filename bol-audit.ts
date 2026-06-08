@@ -28,29 +28,39 @@ export async function tryBolViaGemini(ean: string, masterTitle?: string): Promis
     return null;
   }
 
-  const prompt = `You are a professional product intelligence scraper for bol.com.
-Locate the correct product matching the EAN "${ean}" and product title "${masterTitle || ''}".
+  const prompt = `You are a product data extraction assistant with access to Google Search.
+TASK: Find the LIVE product listing on bol.com for EAN "${ean}" (Title: "${masterTitle || ''}") and extract accurate data.
+STEPS:
+1. Use Google Search: search for site:bol.com "${ean}"
+2. If no direct product page, also try: bol.com ${ean} or site:bol.com "${masterTitle || ''}"
+3. Open the product page on bol.com and extract the following fields.
+FIELD RULES:
+- "price": The current buy-box price (EUR, numerical string e.g. "14.99"). The price shown when clicking "In winkelwagen". Do NOT guess.
+- "shipping": The delivery time message on the product page (e.g. "Morgen in huis", "Uiterlijk donderdag 12 juni"). Extract the EXACT Dutch message.
+- "buyboxOwner": The seller name shown as "Verkocht door [seller]". If sold by bol.com itself, return exactly "bol.com". If third-party, return their exact seller name.
+- "title": The exact full product title on the bol.com product page.
+- "description": The product description or short summary details, first 500 characters.
+- "images": array of product image URLs.
+- "bullets": array of bullet feature items from the description/specs.
+- "productUrl": the direct final product link on bol.com.
+- "liveVariations": variation options description if any, else empty string.
 
-Please follow these exact steps to find the product:
-1. Search Google using Google Search tool for 'site:bol.com "${ean}"' or 'bol.com ${ean}'.
-2. If that search yields very few results or does not find the specific product page, search Google for 'site:bol.com "${masterTitle || ''}"' or search for 'site:bol.com ${ean} ${masterTitle || ''}'.
-3. Find the official product listing page on bol.com and extract information.
-4. Extract the live attributes of the product: title, price, shipping time message, description, bullet points, image URLs, product URL, variations, and buyboxOwner (seller name). Ensure they are fully grounded in search results.
+CRITICAL:
+- Do NOT hallucinate. Every field must be grounded in search results.
+- If a field cannot be confirmed, return "N/A".
 
-Return ONLY a single, exact JSON object matching the following structure. No other conversational text, no other markdown text. Ensure it is wrapped in an exact \`\`\`json markdown block:
+Return ONLY this JSON in a \`\`\`json block:
 {
-  "title": "exact full product title on bol.com",
-  "price": "correct numerical price string e.g. 14.99",
-  "shipping": "correct shipping time/delivery message e.g. 'Morgen in huis' or 'Uiterlijk donderdag 22 mei'",
-  "description": "product description details, first 500 characters",
-  "images": ["image url 1", "image url 2"],
-  "bullets": ["feature point 1", "feature point 2"],
-  "productUrl": "the direct final product link on bol.com",
-  "liveVariations": "variation options if any, else empty string",
-  "buyboxOwner": "The seller name (verkocht door). Defaults to 'bol.com' if sold/shipped by them."
-}
-
-Ensure all extracted values (pricing, title, shipping) are fully grounded in search results. If an attribute cannot be found, set it to "N/A" rather than leaving it empty.`;
+  "title": "...",
+  "price": "12.99",
+  "shipping": "Morgen in huis",
+  "buyboxOwner": "bol.com",
+  "description": "...",
+  "images": ["url1", "url2"],
+  "bullets": ["bullet 1", "bullet 2"],
+  "productUrl": "...",
+  "liveVariations": ""
+}`;
 
   const normalizeParsedData = (obj: any) => {
     if (!obj) return obj;
