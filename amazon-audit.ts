@@ -349,40 +349,52 @@ export async function scrapperAmazon(url: string, domain: string, locConfig: any
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     try {
-      // Wait a moment for the page to settle
       await page.waitForTimeout(2000);
-      
-      // Click the "Deliver to" location popover link
       const locationLink = await page.$('#nav-global-location-popover-link');
       if (locationLink) {
         await locationLink.click();
+        await page.waitForSelector('#GLUXZipUpdateInput', { state: 'visible', timeout: 5000 }).catch(() => null);
         
-        // Wait for the zip code input to appear
-        await page.waitForSelector('#GLUXZipUpdateInput', { state: 'visible', timeout: 5000 });
+        // NEW FIX for FR/DE: Select the Country from the dropdown first
+        if (locConfig.countryCode) {
+          const countryDropdown = await page.$('#GLUXCountryValue, span[data-action="a-dropdown-button"]');
+          if (countryDropdown) {
+             await countryDropdown.click();
+             await page.waitForTimeout(1000);
+             // Click the dropdown link matching the country code (e.g. 'FR' or 'DE')
+             const countryLink = await page.$(`.a-dropdown-link[data-value*='"${locConfig.countryCode}"'], .a-dropdown-link[data-value='${locConfig.countryCode}']`);
+             if (countryLink) {
+                await countryLink.click();
+                await page.waitForTimeout(1000);
+             }
+          }
+        }
+        // Now fill the zip code
+        const zipInput = await page.$('#GLUXZipUpdateInput');
+        if (zipInput) {
+           await zipInput.fill(locConfig.zip);
+           await page.click('#GLUXZipUpdate');
+           await page.waitForTimeout(1500);
+        }
         
-        // Fill in the local zip code (from locConfig)
-        await page.fill('#GLUXZipUpdateInput', locConfig.zip);
-        
-        // Click the Apply button
-        await page.click('#GLUXZipUpdate');
-        
-        // Wait briefly for Amazon to process the zip code
-        await page.waitForTimeout(1500);
-        
-        // If a "Continue" button appears (sometimes happens), click it
+        // Click the generic "Done" button if the country change requires it
+        const doneBtn = await page.$('button[name="glowDoneButton"]');
+        if (doneBtn) {
+           await doneBtn.click();
+           await page.waitForTimeout(1000);
+        }
+        // Click "Continue" if it asks to confirm
         const continueBtn = await page.$('.a-popover-footer #GLUXConfirmClose');
         if (continueBtn) {
           await continueBtn.click();
           await page.waitForTimeout(1000);
         }
-        
-        // Reload the page so the new location prices and sellers take effect
         await page.reload({ waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
-        console.log(`[AMAZON] Successfully injected local zip code: ${locConfig.zip}`);
+        console.log(`[AMAZON] Injected location: Country ${locConfig.countryCode}, Zip ${locConfig.zip}`);
       }
     } catch (zipErr: any) {
-      console.warn('[AMAZON] Could not inject zip code (might already be local or widget not found):', zipErr.message);
+      console.warn('[AMAZON] Location injection error (might already be local):', zipErr.message);
     }
 
     try {
