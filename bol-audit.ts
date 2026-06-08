@@ -982,74 +982,42 @@ export async function auditBol(ean: string, masterData: any) {
       console.log('[BOL] Railway environment detected. Activating prioritised WAF-evasion routing (Gemini Search Grounding via Google to bypass Akamai IP restrictions).');
     }
 
-    try {
-      // ── Strategy 1: Gemini Google Search Grounding ─────────────────────────
-      console.log('[BOL] Trying Strategy 1: Gemini Google Search Grounding...');
-      data = await tryBolViaGemini(ean, masterData?.title);
-      if (data) {
-        console.log('[BOL] Strategy 1 succeeded via Gemini.');
-        dataSource = 'gemini';
-      }
-
-      // ── Strategy 2: Playwright stealth browser (hardened) ─────────────────────
-      if (!data) {
-        try {
-          console.log('[BOL] Adding 2-second delay before browser strategy to avoid WAF detection...');
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          console.log('[BOL] Trying Strategy 2: Playwright stealth browser...');
-
-          const scrapeResult = await scrapperBol(ean);
-          data = scrapeResult.data;
-          browser = scrapeResult.browser;
-          dataSource = 'browser';
-        } catch (browserError: any) {
-          console.error("[BOL] Browser strategy failed:", browserError.message);
-          
-          // Anti-WAF recovery with fallback to Gemini Search grounding (with 2-second timeout)
-          if (browserError.message.includes('WAF_BLOCKED') || browserError.message.includes('anti-bot') || browserError.message.includes('blocked')) {
-            console.log('[BOL] Browser block detected. Attempting recovery via relaxed Gemini Google Search Grounding...');
-            data = await tryBolViaGemini(ean, masterData?.title);
-            if (data && data.title) {
-              console.log('[BOL WAF RECOVERY] Re-running Gemini Grounding was successful.');
-              dataSource = 'gemini-recovery-after-waf';
-            } else {
-              console.warn('[BOL] Browser and Gemini both failed. Surpressing throw to allow graceful exit.');
-              // Removed: throw browserError;
-            }
-          } else {
-            console.warn('[BOL] Unknown browser error. Surpressing throw to allow graceful exit:', browserError.message);
-            // Removed: throw browserError;
-          }
-        }
-      }
-    } catch (strategyError: any) {
-      console.error("[BOL] Strategy execution error caught. Surpressing to allow graceful exit:", strategyError.message);
+    // ── Strategy 1: Gemini Google Search Grounding ─────────────────────────
+    console.log('[BOL] Trying Strategy 1: Gemini Google Search Grounding...');
+    data = await tryBolViaGemini(ean, masterData?.title);
+    if (data) {
+      console.log('[BOL] Strategy 1 succeeded via Gemini.');
+      dataSource = 'gemini';
     }
 
+    // ── Strategy 2: Playwright stealth browser (hardened) ─────────────────────
     if (!data) {
-      console.warn('[BOL] All extraction strategies failed (likely due to Akamai WAF blocking the Railway IP and Gemini missing the EAN). Failing gracefully to prevent batch crash.');
-      const gracefulLiveData = {
-        title: "N/A",
-        description: "",
-        price: "N/A",
-        listPrice: "",
-        currency: "EUR",
-        shipping: "N/A",
-        shippingDays: "N/A",
-        rawShipping: "N/A",
-        variations: 0,
-        buyboxOwner: "N/A",
-        images: [],
-        _dataSource: "failed-gracefully"
-      };
-      const gracefulAuditResult = {
-        score: 0,
-        title: { match: false, live: "N/A", master: masterData?.title || "" },
-        description: { match: false, live: "N/A", master: masterData?.description || "" },
-        price: { live: "N/A", master: masterData?.price || "" },
-        bullets: []
-      };
-      return { liveData: gracefulLiveData, auditResult: gracefulAuditResult };
+      try {
+        console.log('[BOL] Adding 2-second delay before browser strategy to avoid WAF detection...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log('[BOL] Trying Strategy 2: Playwright stealth browser...');
+
+        const scrapeResult = await scrapperBol(ean);
+        data = scrapeResult.data;
+        browser = scrapeResult.browser;
+        dataSource = 'browser';
+      } catch (browserError: any) {
+        console.error("[BOL] Browser strategy failed:", browserError.message);
+        
+        // Anti-WAF recovery with fallback to Gemini Search grounding (with 2-second timeout)
+        if (browserError.message.includes('WAF_BLOCKED') || browserError.message.includes('anti-bot') || browserError.message.includes('blocked')) {
+          console.log('[BOL] Browser block detected. Attempting recovery via relaxed Gemini Google Search Grounding...');
+          data = await tryBolViaGemini(ean, masterData?.title);
+          if (data && data.title) {
+            console.log('[BOL WAF RECOVERY] Re-running Gemini Grounding was successful.');
+            dataSource = 'gemini-recovery-after-waf';
+          } else {
+            throw browserError;
+          }
+        } else {
+          throw browserError;
+        }
+      }
     }
 
     const bolShippingDays = calculateBolShippingDays(data.shipping || '');
