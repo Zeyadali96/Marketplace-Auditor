@@ -1,7 +1,14 @@
-import { chromium } from 'playwright';
+import { chromium as chromiumExtra } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
 import * as cheerio from 'cheerio';
 import { GoogleGenAI } from '@google/genai';
 import { getSimilarity, cleanAndNormalizePrice } from './helpers.ts';
+
+try {
+  chromiumExtra.use(stealth());
+} catch (e: any) {
+  console.warn('[AMAZON SETUP] Stealth:', e.message);
+}
 
 // Helper for Amazon Google Search Grounding Fallback
 export async function tryAmazonViaGemini(asin: string, domain: string): Promise<any | null> {
@@ -14,11 +21,6 @@ export async function tryAmazonViaGemini(asin: string, domain: string): Promise<
   try {
     const genai = new GoogleGenAI({
       apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
     });
 
     console.log(`[AMAZON GEMINI] Generating content with googleSearch grounding for ASIN: ${asin} on ${domain}`);
@@ -48,7 +50,7 @@ Extract and return a single, exact JSON object with the following schema:
 Make sure all details (pricing, title, shipping, buyboxOwner) are fully grounded in search results. Ensure the return contains ONLY the raw JSON object. No other conversational text, no other markdown text. Ensure it is wrapped in an exact \`\`\`json markdown block.`;
 
     const response = await genai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.0-flash',
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
@@ -230,7 +232,7 @@ export async function scrapperAmazon(url: string, domain: string, locConfig: any
     };
   }
 
-  const browser = await chromium.launch(launchOptions).catch(err => {
+  const browser = await chromiumExtra.launch(launchOptions).catch(err => {
     console.error("AMAZON AUDIT FAILED TO LAUNCH CHROMIUM:", err);
     throw new Error(`Browser launch failed. Error: ${err.message}`);
   });
@@ -286,10 +288,7 @@ export async function scrapperAmazon(url: string, domain: string, locConfig: any
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-User': '?1',
-        'Sec-Fetch-Dest': 'document',
-        'X-Forwarded-For': regionIp,
-        'Client-IP': regionIp,
-        'X-Real-IP': regionIp
+        'Sec-Fetch-Dest': 'document'
       },
       ignoreHTTPSErrors: true
     });
@@ -1281,29 +1280,24 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
     }
 
     // Fallback: Check if scraping is incomplete
-    const isScrapingIncomplete = 
-      !amazonTitle || 
-      amazonTitle.toLowerCase().includes('robot') || 
-      amazonTitle.toLowerCase().includes('captcha') || 
+    const isBotBlocked =
+      !amazonTitle ||
+      amazonTitle.toLowerCase().includes('robot') ||
+      amazonTitle.toLowerCase().includes('captcha') ||
       amazonTitle.toLowerCase().includes('unusual traffic') ||
       amazonTitle.toLowerCase().includes('automated access') ||
-      amazonTitle.length < 3 ||
-      !amazonPrice || 
-      amazonPrice === 'N/A' || 
-      shippingDays === 'N/A' ||
-      !rawShippingTime || 
-      rawShippingTime === 'N/A' ||
-      !amazonBuyboxOwner || 
-      amazonBuyboxOwner === 'N/A' || 
-      amazonBuyboxOwner.trim() === '' ||
-      amazonBullets.length === 0;
+      amazonTitle.length < 3;
+
+    const isPriceMissing = !amazonPrice || amazonPrice === 'N/A';
+
+    const isScrapingIncomplete = isBotBlocked || isPriceMissing;
 
     if (isScrapingIncomplete) {
       console.log('[AMAZON] Scraped data is incomplete or empty. Trying Gemini Google Search Grounding fallback...');
       const geminiData = await tryAmazonViaGemini(asin, domain);
       if (geminiData && geminiData.title) {
         console.log('[AMAZON] Gemini Fallback Succeeded.');
-        if (!amazonTitle || amazonTitle.toLowerCase().includes('robot') || amazonTitle.toLowerCase().includes('captcha') || amazonTitle.toLowerCase().includes('unusual traffic') || amazonTitle.length < 3) {
+        if (isBotBlocked) {
           amazonTitle = geminiData.title;
         }
         if (geminiData.price && (!amazonPrice || amazonPrice === 'N/A')) {
@@ -1312,7 +1306,7 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
         if (geminiData.description && (!amazonDesc || amazonDesc.length < 5)) {
           amazonDesc = geminiData.description;
         }
-        if (geminiData.buyboxOwner && (!amazonBuyboxOwner || amazonBuyboxOwner === 'N/A')) {
+        if (geminiData.buyboxOwner && (isBotBlocked || !amazonBuyboxOwner || amazonBuyboxOwner === 'N/A')) {
           amazonBuyboxOwner = geminiData.buyboxOwner;
         }
         if (geminiData.bullets && geminiData.bullets.length > 0 && amazonBullets.length === 0) {
@@ -1327,7 +1321,7 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
         if (geminiData.variations !== undefined && variationsCount <= 1) {
           variationsCount = typeof geminiData.variations === 'number' ? geminiData.variations : parseInt(geminiData.variations) || 0;
         }
-        if (geminiData.shipping && (!rawShippingTime || rawShippingTime === 'N/A')) {
+        if (geminiData.shipping && (isBotBlocked || !rawShippingTime || rawShippingTime === 'N/A')) {
           rawShippingTime = geminiData.shipping;
           try {
             const raw = rawShippingTime.toLowerCase();
