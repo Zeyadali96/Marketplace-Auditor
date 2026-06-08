@@ -1,7 +1,27 @@
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
 import * as cheerio from 'cheerio';
 import { GoogleGenAI } from '@google/genai';
-import { getSimilarity, cleanAndNormalizePrice } from './helpers.ts';
+import { getSimilarity, cleanAndNormalizePrice } from './amazon-helpers.ts';
+
+// Register standard browser stealth plugins on the extra chromium instance
+try {
+  chromium.use(stealth());
+} catch (err: any) {
+  console.warn('[AMAZON SETUP] Web stealth registrations:', err.message);
+}
+
+export const amazonLocalizationMap: Record<string, { locale: string; timezoneId: string; city: string; zip: string; currency: string; countryCode?: string; deliverTo: string[]; lat: number; lon: number }> = {
+  'amazon.co.uk': { locale: 'en-GB', timezoneId: 'Europe/London', city: 'LND', zip: 'SW1A 1AA', currency: 'GBP', countryCode: 'GB', deliverTo: ['Deliver to', 'Livre à'], lat: 51.5074, lon: -0.1278 },
+  'amazon.de': { locale: 'de-DE', timezoneId: 'Europe/Berlin', city: 'BER', zip: '10117', currency: 'EUR', countryCode: 'DE', deliverTo: ['Lieferung nach', 'Liefern an', 'Deliver to'], lat: 52.5200, lon: 13.4050 },
+  'amazon.fr': { locale: 'fr-FR', timezoneId: 'Europe/Paris', city: 'PAR', zip: '75001', currency: 'EUR', countryCode: 'FR', deliverTo: ['Livrer à', 'Livraison à', 'Deliver to'], lat: 48.8566, lon: 2.3522 },
+  'amazon.it': { locale: 'it-IT', timezoneId: 'Europe/Rome', city: 'ROM', zip: '00118', currency: 'EUR', countryCode: 'IT', deliverTo: ['Invia a', 'Consegna a', 'Deliver to'], lat: 41.9028, lon: 12.4964 },
+  'amazon.es': { locale: 'es-ES', timezoneId: 'Europe/Madrid', city: 'MAD', zip: '28001', currency: 'EUR', countryCode: 'ES', deliverTo: ['Enviar a', 'Entrega en', 'Deliver to'], lat: 40.4168, lon: -3.7037 },
+  'amazon.nl': { locale: 'nl-NL', timezoneId: 'Europe/Amsterdam', city: 'AMS', zip: '1011 AB', currency: 'EUR', countryCode: 'NL', deliverTo: ['Bezorgen in', 'Deliver to'], lat: 52.3676, lon: 4.9041 },
+  'amazon.pl': { locale: 'pl-PL', timezoneId: 'Europe/Warsaw', city: 'WAW', zip: '00-001', currency: 'PLN', countryCode: 'PL', deliverTo: ['Dostawa do', 'Wyślij do', 'Deliver to'], lat: 52.2297, lon: 21.0122 },
+  'amazon.se': { locale: 'sv-SE', timezoneId: 'Europe/Stockholm', city: 'STO', zip: '111 20', currency: 'SEK', countryCode: 'SE', deliverTo: ['Skicka till', 'Leverera till', 'Deliver to'], lat: 59.3293, lon: 18.0686 },
+  'amazon.com.be': { locale: 'nl-BE', timezoneId: 'Europe/Brussels', city: 'BRU', zip: '1000', currency: 'EUR', countryCode: 'BE', deliverTo: ['Bezorgen in', 'Livrer à', 'Deliver to'], lat: 50.8503, lon: 4.3517 },
+};
 
 // Helper for Amazon Google Search Grounding Fallback
 export async function tryAmazonViaGemini(asin: string, domain: string): Promise<any | null> {
@@ -32,7 +52,7 @@ STEPS:
 FIELD RULES:
 - "price": The BUY BOX price — the actual price in the main Add-to-Cart section (EUR/GBP/USD depending on domain, do not include currency symbols in the price field itself, just the raw numerical string). NOT the crossed-out list/was price. Extract the exact numerical value (e.g. "14.99").
 - "shipping": The STANDARD FREE delivery message only (look for "Gratis-Lieferung / Kostenlose Lieferung / Free Delivery"). Do NOT use Prime-only expedited delivery or "fastest delivery" messages. Extract just the date part (e.g. "Mittwoch, 11. Juni" or "Wednesday, June 11").
-- "buyboxOwner": The seller shown under "Verkauf durch" or "Sold by" or similar. If it is Amazon itself, return exactly "Amazon". If third-party, return their exact store name. NEVER return "N/A" if it can be found.
+- "buyboxOwner": The seller shown under "Verkauf durch" or "Sold by" or similar. If it is Amazon itself, return exactly "Amazon". If third-party, return their exact store name. NEVER return "N/A" if it can be found. If the Buybox owner is Amazon, you must return "Amazon".
 - "title": The full product title as shown on the page.
 - "description": product description details or key features, first 500 characters.
 - "images": list of primary image URLs.
@@ -41,6 +61,9 @@ FIELD RULES:
 - "hasAPlus": boolean indicating whether A+ Content / rich description is present on the page.
 
 CRITICAL:
+- Note: This product may have multiple variations (colors, sizes) with different prices. Extract the price ONLY for the variation matching ASIN ${asin}. Do not use a cached or snippet price if it belongs to a different variation.
+- If the Buybox owner is Amazon, it must return "Amazon".
+- If you cannot verify the variation's price, you must return "N/A" instead of guessing.
 - Do NOT hallucinate or estimate values. Every field must be grounded in what you see on the page.
 - If a value genuinely cannot be found, return "N/A".
 
@@ -269,29 +292,13 @@ export async function scrapperAmazon(url: string, domain: string, locConfig: any
       timezoneId: locConfig.timezoneId,
       permissions: ['geolocation'],
       geolocation: { 
-        latitude: domain === 'amazon.co.uk' ? 51.5074 : 
-                  domain === 'amazon.de' ? 52.5200 :
-                  domain === 'amazon.fr' ? 48.8566 :
-                  domain === 'amazon.it' ? 41.9028 :
-                  domain === 'amazon.es' ? 40.4168 :
-                  domain === 'amazon.nl' ? 52.3676 :
-                  domain === 'amazon.pl' ? 52.2297 :
-                  domain === 'amazon.se' ? 59.3293 :
-                  domain === 'amazon.com.be' ? 50.8503 : 40.7128, 
-        longitude: domain === 'amazon.co.uk' ? -0.1278 : 
-                   domain === 'amazon.de' ? 13.4050 :
-                   domain === 'amazon.fr' ? 2.3522 :
-                   domain === 'amazon.it' ? 12.4964 :
-                   domain === 'amazon.es' ? -3.7037 :
-                   domain === 'amazon.nl' ? 4.9041 :
-                   domain === 'amazon.pl' ? 21.0122 :
-                   domain === 'amazon.se' ? 18.0686 :
-                   domain === 'amazon.com.be' ? 4.3517 : -74.0060, 
+        latitude: locConfig.lat || 40.7128, 
+        longitude: locConfig.lon || -74.0060, 
         accuracy: 100 
       },
       extraHTTPHeaders: {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': `${locConfig.locale},${locConfig.locale.split('-')[0]};q=0.9,en;q=0.8`,
+        'Accept-Language': `${locConfig.locale},en;q=0.9`,
         'Upgrade-Insecure-Requests': '1',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-Mode': 'navigate',
@@ -475,19 +482,7 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
     const domain = marketplace || 'amazon.com';
     const url = `https://www.${domain}/dp/${asin}`;
 
-    const amazonLocalizationMap: Record<string, { locale: string; timezoneId: string; city: string; zip: string; currency: string; countryCode?: string; deliverTo: string[] }> = {
-      'amazon.co.uk': { locale: 'en-GB', timezoneId: 'Europe/London', city: 'LND', zip: 'SW1A 1AA', currency: 'GBP', countryCode: 'GB', deliverTo: ['Deliver to', 'Livre à'] },
-      'amazon.de': { locale: 'de-DE', timezoneId: 'Europe/Berlin', city: 'BER', zip: '10117', currency: 'EUR', countryCode: 'DE', deliverTo: ['Lieferung nach', 'Liefern an', 'Deliver to'] },
-      'amazon.fr': { locale: 'fr-FR', timezoneId: 'Europe/Paris', city: 'PAR', zip: '75001', currency: 'EUR', countryCode: 'FR', deliverTo: ['Livrer à', 'Livraison à', 'Deliver to'] },
-      'amazon.it': { locale: 'it-IT', timezoneId: 'Europe/Rome', city: 'ROM', zip: '00118', currency: 'EUR', countryCode: 'IT', deliverTo: ['Invia a', 'Consegna a', 'Deliver to'] },
-      'amazon.es': { locale: 'es-ES', timezoneId: 'Europe/Madrid', city: 'MAD', zip: '28001', currency: 'EUR', countryCode: 'ES', deliverTo: ['Enviar a', 'Entrega en', 'Deliver to'] },
-      'amazon.nl': { locale: 'nl-NL', timezoneId: 'Europe/Amsterdam', city: 'AMS', zip: '1011 AB', currency: 'EUR', countryCode: 'NL', deliverTo: ['Bezorgen in', 'Deliver to'] },
-      'amazon.pl': { locale: 'pl-PL', timezoneId: 'Europe/Warsaw', city: 'WAW', zip: '00-001', currency: 'PLN', countryCode: 'PL', deliverTo: ['Dostawa do', 'Wyślij do', 'Deliver to'] },
-      'amazon.se': { locale: 'sv-SE', timezoneId: 'Europe/Stockholm', city: 'STO', zip: '111 20', currency: 'SEK', countryCode: 'SE', deliverTo: ['Skicka till', 'Leverera till', 'Deliver to'] },
-      'amazon.com.be': { locale: 'nl-BE', timezoneId: 'Europe/Brussels', city: 'BRU', zip: '1000', currency: 'EUR', countryCode: 'BE', deliverTo: ['Bezorgen in', 'Livrer à', 'Deliver to'] },
-    };
-
-    const locConfig = amazonLocalizationMap[domain] || { locale: 'en-US', timezoneId: 'America/New_York', city: 'NYC', zip: '10001', currency: 'USD', deliverTo: ['Deliver to'] };
+    const locConfig = amazonLocalizationMap[domain] || { locale: 'en-US', timezoneId: 'America/New_York', city: 'NYC', zip: '10001', currency: 'USD', deliverTo: ['Deliver to'], lat: 40.7128, lon: -74.0060 };
 
     const scraperResult = await scrapperAmazon(url, domain, locConfig);
     browser = scraperResult.browser;
