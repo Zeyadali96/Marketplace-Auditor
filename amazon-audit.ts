@@ -11,127 +11,16 @@ try {
   console.warn('[AMAZON SETUP] Web stealth registrations:', err.message);
 }
 
-export const amazonLocalizationMap: Record<string, { 
-  locale: string
-  timezoneId: string
-  city: string
-  zip: string
-  currency: string
-  countryCode?: string
-  deliverTo: string[]
-  lat: number
-  lon: number
-  userAgent?: string
-  acceptLanguage?: string
-}> = {
-  'amazon.co.uk': { 
-    locale: 'en-GB', 
-    timezoneId: 'Europe/London', 
-    city: 'LND', 
-    zip: 'SW1A 1AA', 
-    currency: 'GBP', 
-    countryCode: 'GB', 
-    deliverTo: ['Deliver to', 'Livre à'], 
-    lat: 51.5074, 
-    lon: -0.1278,
-    acceptLanguage: 'en-GB,en;q=0.9,en-US;q=0.8'
-  },
-  'amazon.de': { 
-    locale: 'de-DE', 
-    timezoneId: 'Europe/Berlin', 
-    city: 'BER', 
-    zip: '10117', 
-    currency: 'EUR', 
-    countryCode: 'DE', 
-    deliverTo: ['Lieferung nach', 'Liefern an', 'Deliver to'], 
-    lat: 52.5200, 
-    lon: 13.4050,
-    acceptLanguage: 'de-DE,de;q=0.9,en;q=0.8'
-  },
-  'amazon.fr': { 
-    locale: 'fr-FR', 
-    timezoneId: 'Europe/Paris', 
-    city: 'PAR', 
-    zip: '75001', 
-    currency: 'EUR', 
-    countryCode: 'FR', 
-    deliverTo: ['Livrer à', 'Livraison à', 'Deliver to'], 
-    lat: 48.8566, 
-    lon: 2.3522,
-    acceptLanguage: 'fr-FR,fr;q=0.9,en;q=0.8'
-  },
-  'amazon.it': { 
-    locale: 'it-IT', 
-    timezoneId: 'Europe/Rome', 
-    city: 'ROM', 
-    zip: '00118', 
-    currency: 'EUR', 
-    countryCode: 'IT', 
-    deliverTo: ['Invia a', 'Consegna a', 'Deliver to'], 
-    lat: 41.9028, 
-    lon: 12.4964,
-    acceptLanguage: 'it-IT,it;q=0.9,en;q=0.8'
-  },
-  'amazon.es': { 
-    locale: 'es-ES', 
-    timezoneId: 'Europe/Madrid', 
-    city: 'MAD', 
-    zip: '28001', 
-    currency: 'EUR', 
-    countryCode: 'ES', 
-    deliverTo: ['Enviar a', 'Entrega en', 'Deliver to'], 
-    lat: 40.4168, 
-    lon: -3.7037,
-    acceptLanguage: 'es-ES,es;q=0.9,en;q=0.8'
-  },
-  'amazon.nl': { 
-    locale: 'nl-NL', 
-    timezoneId: 'Europe/Amsterdam', 
-    city: 'AMS', 
-    zip: '1011 AB', 
-    currency: 'EUR', 
-    countryCode: 'NL', 
-    deliverTo: ['Bezorgen in', 'Deliver to'], 
-    lat: 52.3676, 
-    lon: 4.9041,
-    acceptLanguage: 'nl-NL,nl;q=0.9,en;q=0.8'
-  },
-  'amazon.pl': { 
-    locale: 'pl-PL', 
-    timezoneId: 'Europe/Warsaw', 
-    city: 'WAW', 
-    zip: '00-001', 
-    currency: 'PLN', 
-    countryCode: 'PL', 
-    deliverTo: ['Dostawa do', 'Wyślij do', 'Deliver to'], 
-    lat: 52.2297, 
-    lon: 21.0122,
-    acceptLanguage: 'pl-PL,pl;q=0.9,en;q=0.8'
-  },
-  'amazon.se': { 
-    locale: 'sv-SE', 
-    timezoneId: 'Europe/Stockholm', 
-    city: 'STO', 
-    zip: '111 20', 
-    currency: 'SEK', 
-    countryCode: 'SE', 
-    deliverTo: ['Skicka till', 'Leverera till', 'Deliver to'], 
-    lat: 59.3293, 
-    lon: 18.0686,
-    acceptLanguage: 'sv-SE,sv;q=0.9,en;q=0.8'
-  },
-  'amazon.com.be': { 
-    locale: 'nl-BE', 
-    timezoneId: 'Europe/Brussels', 
-    city: 'BRU', 
-    zip: '1000', 
-    currency: 'EUR', 
-    countryCode: 'BE', 
-    deliverTo: ['Bezorgen in', 'Livrer à', 'Deliver to'], 
-    lat: 50.8503, 
-    lon: 4.3517,
-    acceptLanguage: 'nl-BE,nl;q=0.9,fr;q=0.8,en;q=0.7'
-  },
+export const amazonLocalizationMap: Record<string, { locale: string; timezoneId: string; city: string; zip: string; currency: string; countryCode?: string; deliverTo: string[]; lat: number; lon: number }> = {
+  'amazon.co.uk': { locale: 'en-GB', timezoneId: 'Europe/London', city: 'LND', zip: 'SW1A 1AA', currency: 'GBP', countryCode: 'GB', deliverTo: ['Deliver to', 'Livre à'], lat: 51.5074, lon: -0.1278 },
+  'amazon.de': { locale: 'de-DE', timezoneId: 'Europe/Berlin', city: 'BER', zip: '10117', currency: 'EUR', countryCode: 'DE', deliverTo: ['Lieferung nach', 'Liefern an', 'Deliver to'], lat: 52.5200, lon: 13.4050 },
+  'amazon.fr': { locale: 'fr-FR', timezoneId: 'Europe/Paris', city: 'PAR', zip: '75001', currency: 'EUR', countryCode: 'FR', deliverTo: ['Livrer à', 'Livraison à', 'Deliver to'], lat: 48.8566, lon: 2.3522 },
+  'amazon.it': { locale: 'it-IT', timezoneId: 'Europe/Rome', city: 'ROM', zip: '00118', currency: 'EUR', countryCode: 'IT', deliverTo: ['Invia a', 'Consegna a', 'Deliver to'], lat: 41.9028, lon: 12.4964 },
+  'amazon.es': { locale: 'es-ES', timezoneId: 'Europe/Madrid', city: 'MAD', zip: '28001', currency: 'EUR', countryCode: 'ES', deliverTo: ['Enviar a', 'Entrega en', 'Deliver to'], lat: 40.4168, lon: -3.7037 },
+  'amazon.nl': { locale: 'nl-NL', timezoneId: 'Europe/Amsterdam', city: 'AMS', zip: '1011 AB', currency: 'EUR', countryCode: 'NL', deliverTo: ['Bezorgen in', 'Deliver to'], lat: 52.3676, lon: 4.9041 },
+  'amazon.pl': { locale: 'pl-PL', timezoneId: 'Europe/Warsaw', city: 'WAW', zip: '00-001', currency: 'PLN', countryCode: 'PL', deliverTo: ['Dostawa do', 'Wyślij do', 'Deliver to'], lat: 52.2297, lon: 21.0122 },
+  'amazon.se': { locale: 'sv-SE', timezoneId: 'Europe/Stockholm', city: 'STO', zip: '111 20', currency: 'SEK', countryCode: 'SE', deliverTo: ['Skicka till', 'Leverera till', 'Deliver to'], lat: 59.3293, lon: 18.0686 },
+  'amazon.com.be': { locale: 'nl-BE', timezoneId: 'Europe/Brussels', city: 'BRU', zip: '1000', currency: 'EUR', countryCode: 'BE', deliverTo: ['Bezorgen in', 'Livrer à', 'Deliver to'], lat: 50.8503, lon: 4.3517 },
 };
 
 // Helper for Amazon Google Search Grounding Fallback
@@ -354,10 +243,6 @@ export async function performAmazonAudit(master: any, live: any, domain?: string
 // Main Amazon Audit Pipeline Function
 export async function scrapperAmazon(url: string, domain: string, locConfig: any): Promise<{ content: string; browser: any }> {
   const proxyServer = process.env.PROXY_SERVER;
-  const isDeployment = !!(process.env.RAILWAY_STATIC_URL || process.env.NODE_ENV === 'production');
-  
-  // Determine if this is a DE or FR domain (most restrictive geo-detection)
-  const isStrictGeoRegion = domain === 'amazon.de' || domain === 'amazon.fr';
   
   const launchOptions: any = {
     args: [
@@ -366,9 +251,8 @@ export async function scrapperAmazon(url: string, domain: string, locConfig: any
       '--disable-dev-shm-usage', 
       '--disable-gpu', 
       '--single-process',
-      '--disable-blink-features=AutomationControlled',
-      isStrictGeoRegion ? '--disable-web-resources' : '',
-    ].filter(Boolean)
+      '--disable-blink-features=AutomationControlled'
+    ]
   };
 
   if (proxyServer) {
@@ -385,34 +269,24 @@ export async function scrapperAmazon(url: string, domain: string, locConfig: any
   });
 
   try {
-    // Enhanced geo-IP mapping with residential IPs for better bypass
+    // Generate regional residential IPs mapping to bypass IP filters
     const geoIps: Record<string, string> = {
       'amazon.co.uk': '109.169.130.1',
-      'amazon.de': '109.250.12.150',      // Enhanced: Specific German residential IP
-      'amazon.fr': '194.254.129.220',     // Enhanced: Specific French residential IP
-      'amazon.it': '2.224.10.50',
+      'amazon.de': '109.250.0.12',
+      'amazon.fr': '194.254.129.1',
+      'amazon.it': '2.224.0.1',
       'amazon.es': '80.58.61.250',
-      'amazon.nl': '145.97.15.200',
+      'amazon.nl': '145.97.0.1',
       'amazon.pl': '193.0.96.12',
-      'amazon.se': '155.4.200.100',
+      'amazon.se': '155.4.0.1',
       'amazon.com.be': '193.190.198.1',
       'amazon.com': '12.203.111.99'
     };
     const regionIp = geoIps[domain] || '12.203.111.99';
 
-    // Rotate user agents for better anti-bot bypass (especially important for DE/FR)
-    const userAgents = [
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15'
-    ];
-    const selectedUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-
-    // Enhanced anti-bot headers with proper Accept-Language
+    // Anti-bot optimized headers, user-agents, and viewports
     const context = await browser.newContext({
-      userAgent: selectedUserAgent,
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
       viewport: { width: 1920, height: 1080 },
       locale: locConfig.locale,
       timezoneId: locConfig.timezoneId,
@@ -424,55 +298,36 @@ export async function scrapperAmazon(url: string, domain: string, locConfig: any
       },
       extraHTTPHeaders: {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': locConfig.acceptLanguage || `${locConfig.locale},en;q=0.9`,
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept-Charset': 'utf-8,iso-8859-1;q=0.9,*;q=0.8',
+        'Accept-Language': `${locConfig.locale},en;q=0.9`,
         'Upgrade-Insecure-Requests': '1',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-User': '?1',
         'Sec-Fetch-Dest': 'document',
-        'Sec-Ch-Ua': '"Not A(Brand";v="99", "Google Chrome";v="136", "Chromium";v="136"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Pragma': 'no-cache',
-        'Cache-Control': 'no-cache',
         'X-Forwarded-For': regionIp,
         'Client-IP': regionIp,
-        'X-Real-IP': regionIp,
-        'X-Client-IP': regionIp,
-        'X-Original-IP': regionIp,
+        'X-Real-IP': regionIp
       },
-      ignoreHTTPSErrors: true,
-      bypassCSP: true,
+      ignoreHTTPSErrors: true
     });
 
-    // Enhanced cookie management for regional settings
-    const sessionId = Math.floor(Math.random() * 9000000 + 1000000);
-    const ubid = Math.floor(Math.random() * 9000000 + 1000000);
-    const sessionToken = 'ST-' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-    
     const cookies = [
       { name: 'lc-main', value: locConfig.locale.replace('-', '_'), domain: `.${domain}`, path: '/' },
       { name: 'i18n-prefs', value: locConfig.currency, domain: `.${domain}`, path: '/' },
-      // Enhanced: zip code cookie with proper format for each region
       { name: 'sp-cdn', value: `"${locConfig.city}:${locConfig.zip}"`, domain: `.${domain}`, path: '/' },
-      { name: 'session-id', value: '123-' + sessionId + '-' + Math.floor(Math.random() * 9000000 + 1000000), domain: `.${domain}`, path: '/' },
-      { name: 'ubid-main', value: '123-' + ubid + '-' + Math.floor(Math.random() * 9000000 + 1000000), domain: `.${domain}`, path: '/' },
-      { name: 'session-token', value: sessionToken, domain: `.${domain}`, path: '/' },
-      // Additional regional cookies for better geo-spoofing
-      { name: 'x-main', value: locConfig.countryCode || 'US', domain: `.${domain}`, path: '/' },
-      { name: 'country-id', value: locConfig.countryCode || 'US', domain: `.${domain}`, path: '/' },
+      { name: 'session-id', value: '123-' + Math.floor(Math.random() * 9000000 + 1000000) + '-' + Math.floor(Math.random() * 9000000 + 1000000), domain: `.${domain}`, path: '/' },
+      { name: 'ubid-main', value: '123-' + Math.floor(Math.random() * 9000000 + 1000000) + '-' + Math.floor(Math.random() * 9000000 + 1000000), domain: `.${domain}`, path: '/' },
+      { name: 'session-token', value: 'ST-' + Math.random().toString(36).substring(2), domain: `.${domain}`, path: '/' }
     ];
     await context.addCookies(cookies);
 
     const page = await context.newPage();
     
-    // Enhanced route aborting for better performance
+    // Route Aborting Optimizer (blocks heavy non-essential media assets)
     await page.route('**/*', (route) => {
       const rUrl = route.request().url();
       const resourceType = route.request().resourceType();
-      if (['font', 'media'].includes(resourceType)) {
+      if (['image', 'font', 'media'].includes(resourceType)) {
         return route.abort();
       }
       if (resourceType === 'stylesheet' && !rUrl.includes('amazon')) {
@@ -490,116 +345,161 @@ export async function scrapperAmazon(url: string, domain: string, locConfig: any
       return route.continue();
     });
 
-    console.log(`[scrapperAmazon] Navigating to ${url} with enhanced DE/FR geo-bypass`);
+    console.log(`[scrapperAmazon] Navigating pure Amazon Context to ${url}`);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // Enhanced page settlement with better timing detection
-    console.log(`[scrapperAmazon] Waiting for page to settle...`);
-    await page.waitForLoadState('networkidle').catch(() => null);
-    await page.waitForTimeout(Math.random() * 1000 + 2000); // 2-3 second random wait
+    try {
+      // Wait a moment for the page to settle
+      await page.waitForTimeout(2000);
+      
+      // Click the "Deliver to" location popover link
+      const locationLink = await page.$('#nav-global-location-popover-link');
+      if (locationLink) {
+        await locationLink.click();
+        
+        // Wait for the zip code input to appear
+        await page.waitForSelector('#GLUXZipUpdateInput', { state: 'visible', timeout: 5000 });
+        
+        // Fill in the local zip code (from locConfig)
+        await page.fill('#GLUXZipUpdateInput', locConfig.zip);
+        
+        // Click the Apply button
+        await page.click('#GLUXZipUpdate');
+        
+        // Wait briefly for Amazon to process the zip code
+        await page.waitForTimeout(1500);
+        
+        // If a "Continue" button appears (sometimes happens), click it
+        const continueBtn = await page.$('.a-popover-footer #GLUXConfirmClose');
+        if (continueBtn) {
+          await continueBtn.click();
+          await page.waitForTimeout(1000);
+        }
+        
+        // Reload the page so the new location prices and sellers take effect
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(2000);
+        console.log(`[AMAZON] Successfully injected local zip code: ${locConfig.zip}`);
+      }
+    } catch (zipErr: any) {
+      console.warn('[AMAZON] Could not inject zip code (might already be local or widget not found):', zipErr.message);
+    }
 
-    // Accept cookies first
     try {
       const cookieButtons = ['#sp-cc-accept', 'input[name="accept"]', '#cookie-accept', '#accept-cookies', '.a-button-inner input[data-action="accept-cookies"]'];
       for (const selector of cookieButtons) {
-        try {
-          if (await page.isVisible(selector)) {
-            await page.click(selector).catch(() => null);
-            await page.waitForTimeout(500);
-            break;
-          }
-        } catch (_) {}
+        if (await page.isVisible(selector)) {
+          await page.click(selector).catch(() => null);
+          await page.waitForTimeout(500);
+          break;
+        }
       }
     } catch (_) {}
 
-    // Enhanced zip code injection with multiple strategies and better error handling
-    console.log(`[scrapperAmazon] Starting enhanced zip code injection for ${domain}`);
-    let zipCodeInjected = false;
-
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try {
-        console.log(`[scrapperAmazon] Zip code injection attempt ${attempt}/4`);
-
-        // STRATEGY 1: Click location popover and fill zip
-        try {
-          const locationSelectors = ['#nav-global-location-popover-link', '#glow-ingress-block', '#nav-main-ftr-location-slot', '#nav-location-main'];
-          let locBtn = null;
-          for (const sel of locationSelectors) {
-            const el = await page.$(sel);
-            if (el && await el.isVisible().catch(() => false)) {
-              locBtn = el;
-              break;
-            }
-          }
-
-          if (locBtn) {
-            await locBtn.click({ force: true, timeout: 5000 }).catch(() => null);
-            await page.waitForTimeout(1500);
-
-            const zipInputSelectors = ['#GLUXZipUpdateInput', '#GLUXZipUpdateInput_0', 'input[aria-label*="zip" i]', 'input[aria-label*="postcode" i]'];
-            let zipInput = null;
-            for (const sel of zipInputSelectors) {
-              const el = await page.$(sel);
-              if (el) {
-                const visible = await el.isVisible().catch(() => false);
-                if (visible) {
-                  zipInput = el;
-                  break;
-                }
-              }
-            }
-
-            if (zipInput) {
-              await zipInput.click({ clickCount: 3, timeout: 3000 }).catch(() => null);
-              await page.keyboard.press('Backspace').catch(() => null);
-              await zipInput.fill('');
-              await zipInput.type(locConfig.zip, { delay: 100 });
-              await page.waitForTimeout(800);
-              await page.keyboard.press('Enter').catch(() => null);
-              await page.waitForTimeout(2500);
-
-              const confirmBtn = await page.$('#GLUXConfirmClose input, button[name="glowDoneButton"], .a-popover-footer button');
-              if (confirmBtn && await confirmBtn.isVisible().catch(() => false)) {
-                await confirmBtn.click({ force: true, timeout: 3000 }).catch(() => null);
-                await page.waitForTimeout(1500);
-              }
-
-              zipCodeInjected = true;
-              console.log(`[scrapperAmazon] Zip code injected successfully on attempt ${attempt}`);
-              break;
-            }
-          }
-        } catch (stratErr: any) {
-          console.log(`[scrapperAmazon] Strategy 1 failed: ${stratErr.message}`);
-        }
-
-        if (!zipCodeInjected && attempt < 4) {
-          // If injection didn't work, reload and try again
-          try {
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-            await page.waitForTimeout(2000);
-          } catch (_) {}
-        }
-      } catch (err: any) {
-        console.log(`[scrapperAmazon] Zip injection attempt ${attempt} failed:`, err.message);
-      }
-    }
-
-    if (zipCodeInjected) {
-      console.log(`[scrapperAmazon] Reloading page to apply new location...`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-      await page.waitForLoadState('networkidle').catch(() => null);
-      await page.waitForTimeout(2500);
-    } else {
-      console.warn(`[scrapperAmazon] Could not inject zip code after multiple attempts`);
-    }
-
-    // Final verification that we're at the right location
     try {
-      const locationSlot = await page.$('#nav-global-location-slot');
-      if (locationSlot) {
-        const locationText = await locationSlot.textContent().catch(() => '');
-        console.log(`[scrapperAmazon] Current location slot text: ${locationText}`);
+      console.log(`[scrapperAmazon] UI Regional Unlock: Evaluating postcode injection for ${domain} (Target: ${locConfig.zip})`);
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const isRegionalLocked = await page.evaluate(({ zip }) => {
+          const slot = document.querySelector('#nav-global-location-slot');
+          if (!slot) return true;
+          const text = slot.textContent || '';
+          const zipFirstPart = zip.split(/[\s-]+/)[0];
+          return !text.toLowerCase().includes(zip.toLowerCase()) && !text.toLowerCase().includes(zipFirstPart.toLowerCase());
+        }, { zip: locConfig.zip });
+
+        if (!isRegionalLocked) {
+          console.log(`[scrapperAmazon] Location verified as applied: ${locConfig.zip}`);
+          break;
+        }
+
+        console.log(`[scrapperAmazon] Postal code text mismatch. Attempting injection (${attempt}/3)...`);
+        const locBtn = await page.waitForSelector('#nav-global-location-slot, #glow-ingress-block, #nav-main-ftr-location-slot', { state: 'visible', timeout: 10000 }).catch(() => null);
+        let popoverOpened = false;
+
+        if (locBtn) {
+          for (let clickAttempt = 1; clickAttempt <= 3; clickAttempt++) {
+            await locBtn.click({ force: true }).catch(() => null);
+            await page.waitForTimeout(1500);
+            const isVisible = await page.locator('.a-popover-modal, .a-popover, #GLUXZipUpdateInput, #GLUXZipUpdateInput_0, #GLUXCountryList').isVisible().catch(() => false);
+            if (isVisible) {
+              popoverOpened = true;
+              break;
+            }
+          }
+        }
+
+        if (!popoverOpened) break;
+
+        const zipInputSelector = '#GLUXZipUpdateInput, #GLUXZipUpdateInput_0, input[aria-label*="zip" i], input[aria-label*="postcode" i], input[aria-label*="code" i], input[name="zipCode" i]';
+        const countryListSelector = '#GLUXCountryList';
+        
+        await page.waitForSelector(`${zipInputSelector}, ${countryListSelector}`, { state: 'visible', timeout: 5000 }).catch(() => null);
+        
+        let zipInput = await page.$(zipInputSelector);
+        let zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
+
+        if (!zipVisible) {
+          const countryListVisible = await page.locator(countryListSelector).isVisible().catch(() => false);
+          if (countryListVisible && locConfig.countryCode) {
+            let selectedVal = null;
+            try {
+              const options = await page.$$eval(`${countryListSelector} option`, (opts: any[]) => 
+                opts.map(o => ({ value: o.value, text: o.textContent?.trim() || "" }))
+              );
+              const targetCode = locConfig.countryCode.toLowerCase();
+              const matchByVal = options.find(o => o.value.toLowerCase() === targetCode);
+              if (matchByVal) selectedVal = matchByVal.value;
+            } catch (_) {}
+
+            if (selectedVal) {
+              await page.selectOption(countryListSelector, { value: selectedVal }).catch(() => null);
+            } else {
+              await page.selectOption(countryListSelector, { value: locConfig.countryCode }).catch(() => null);
+            }
+            await page.waitForTimeout(1000);
+            await page.keyboard.press('Enter').catch(() => null);
+            await page.waitForTimeout(2500);
+            await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+          }
+        }
+
+        zipInput = await page.$(zipInputSelector);
+        zipVisible = zipInput ? await zipInput.isVisible().catch(() => false) : false;
+
+        if (zipInput && zipVisible) {
+          await zipInput.click({ clickCount: 3 }).catch(() => null);
+          await page.keyboard.press('Backspace').catch(() => null);
+          await zipInput.fill('');
+          await zipInput.type(locConfig.zip, { delay: 50 });
+          await page.waitForTimeout(500);
+          await page.keyboard.press('Enter').catch(() => null);
+          await page.waitForTimeout(2000);
+          
+          const confirmBtn = await page.$('#GLUXConfirmClose input, button[name="glowDoneButton"]');
+          if (confirmBtn && await confirmBtn.isVisible()) {
+            await confirmBtn.click({ force: true });
+            await page.waitForTimeout(1000);
+          }
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+        }
+      }
+    } catch (_) {}
+
+    try {
+      const oneTimeSelectors = ['#newAccordionRow_header', '#oneTimeBuyBox_feature_div', '#buyNewSection_header', '#oneTimeBuyBox'];
+      for (const s of oneTimeSelectors) {
+        const btn = await page.$(s);
+        if (btn && await btn.isVisible()) {
+          const isSelected = await page.evaluate((el: any) => {
+            return el.classList.contains('a-accordion-row-active') || el.classList.contains('active');
+          }, btn).catch(() => false);
+          if (!isSelected) {
+            await btn.click({ force: true });
+            await page.waitForTimeout(1500);
+          }
+          break;
+        }
       }
     } catch (_) {}
 
@@ -937,36 +837,9 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
     
     let hasAPlus = !!($('#aplus').length || $('#aplus_feature_div').length || $('div[id*="aplus"]').length);
 
-    // Enhanced Buy Box Owner Extraction with language-specific patterns for DE/FR
+    // --- 3. Buybox Owner Extraction ---
     let amazonBuyboxOwner = "";
 
-    // Regional patterns for detecting Amazon seller vs third-party
-    const amazonSellerPatterns = {
-      'en': /sold by amazon|dispatched from and sold by amazon|fulfilled by amazon|amazon.com services/i,
-      'de': /verkauf durch amazon|versandt und verkauft durch amazon|amazon eu sarl|amazon media eu|verfügbar bei und verkauft durch amazon/i,
-      'fr': /vendu par amazon|expédié par amazon|amazon.fr|amazonfr/i,
-      'it': /venduto da amazon|spedito e venduto da amazon|amazon media eu srl/i,
-      'es': /vendido por amazon|enviado y vendido por amazon|amazon media eu/i,
-      'nl': /verkocht door amazon|verzonden en verkocht door amazon/i,
-      'pl': /sprzedawane przez amazon|wysłane i sprzedawane przez amazon/i,
-      'sv': /säljs av amazon|skickas från och säljs av amazon/i,
-    };
-
-    // Determine language code from domain
-    const langMap: Record<string, string> = {
-      'amazon.de': 'de',
-      'amazon.fr': 'fr',
-      'amazon.it': 'it',
-      'amazon.es': 'es',
-      'amazon.nl': 'nl',
-      'amazon.pl': 'pl',
-      'amazon.se': 'sv',
-      'amazon.co.uk': 'en',
-      'amazon.com': 'en',
-    };
-    const lang = langMap[domain] || 'en';
-
-    // Get the Buy Box context
     let mainMerchantEl: any = null;
     const merchantEls = $('#merchant-info');
     merchantEls.each((_, el) => {
@@ -979,34 +852,43 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
       mainMerchantEl = merchantEls.first();
     }
     const mainMerchantText = mainMerchantEl ? mainMerchantEl.text().replace(/\s+/g, ' ').trim() : "";
-
-    // Enhanced language-specific selectors for regional versions
+    
     let soldByTabular = "";
-    const soldBySelectors = [
-      'div[tabular-attribute-name*="Sold by" i]',
-      'div[tabular-attribute-name*="Verkauf durch" i]',
-      'div[tabular-attribute-name*="Vendido por" i]',
-      'div[tabular-attribute-name*="Vendu par" i]',
-      'div[tabular-attribute-name*="Venduto da" i]',
-      'div[tabular-attribute-name*="Sprzedawca" i]',
-      'div[tabular-attribute-name*="Säljs av" i]',
-      'div[tabular-attribute-name*="Verkocht door" i]'
-    ];
-
-    for (const sel of soldBySelectors) {
-      const els = buyBoxContext.find(`${sel} .tabular-buybox-text`);
-      els.each((_, el) => {
-        if ($(el).closest('#subscribeAndSaveAccordionRow, [class*="sns"], [id*="sns"]').length === 0) {
-          soldByTabular = $(el).text().trim();
-          return false;
-        }
-      });
-      if (soldByTabular) break;
+    const soldByTabularEls = buyBoxContext.find('div[tabular-attribute-name*="Sold by" i] .tabular-buybox-text, div[tabular-attribute-name*="Verkauf durch" i] .tabular-buybox-text, div[tabular-attribute-name*="Vendido por" i] .tabular-buybox-text, div[tabular-attribute-name*="Vendu par" i] .tabular-buybox-text, div[tabular-attribute-name*="Sprzedawca" i] .tabular-buybox-text, div[tabular-attribute-name*="Säljs av" i] .tabular-buybox-text');
+    soldByTabularEls.each((_, el) => {
+      if ($(el).closest('#subscribeAndSaveAccordionRow, [class*="sns"], [id*="sns"]').length === 0) {
+        soldByTabular = $(el).text().trim();
+        return false;
+      }
+    });
+    if (!soldByTabular && soldByTabularEls.length > 0) {
+      soldByTabular = soldByTabularEls.first().text().trim();
     }
 
-    // Check if it's Amazon using language-specific patterns
-    const amazonPattern = amazonSellerPatterns[lang as keyof typeof amazonSellerPatterns] || amazonSellerPatterns['en'];
-    const isAmazonSeller = amazonPattern.test(mainMerchantText) || amazonPattern.test(soldByTabular);
+    let dispatchedByTabular = "";
+    const dispatchedByTabularEls = buyBoxContext.find('div[tabular-attribute-name*="Dispatched" i] .tabular-buybox-text, div[tabular-attribute-name*="Verzonden" i] .tabular-buybox-text, div[tabular-attribute-name*="Shipped" i] .tabular-buybox-text, div[tabular-attribute-name*="Expédié" i] .tabular-buybox-text, div[tabular-attribute-name*="Invia" i] .tabular-buybox-text, div[tabular-attribute-name*="Wysyłka" i] .tabular-buybox-text, div[tabular-attribute-name*="Skickas från" i] .tabular-buybox-text');
+    dispatchedByTabularEls.each((_, el) => {
+      if ($(el).closest('#subscribeAndSaveAccordionRow, [class*="sns"], [id*="sns"]').length === 0) {
+        dispatchedByTabular = $(el).text().trim();
+        return false;
+      }
+    });
+    if (!dispatchedByTabular && dispatchedByTabularEls.length > 0) {
+      dispatchedByTabular = dispatchedByTabularEls.first().text().trim();
+    }
+
+    const isAmazonSeller = 
+      /sold by amazon/i.test(mainMerchantText) ||
+      /dispatched from and sold by amazon/i.test(mainMerchantText) ||
+      /vendu par amazon/i.test(mainMerchantText) ||
+      /verkauf durch amazon/i.test(mainMerchantText) ||
+      /verzonden en verkocht door amazon/i.test(mainMerchantText) ||
+      /spedito da e venduto da amazon/i.test(mainMerchantText) ||
+      /vendido por amazon/i.test(mainMerchantText) ||
+      /verkauft von amazon/i.test(mainMerchantText) ||
+      /sprzedawane przez amazon/i.test(mainMerchantText) ||
+      /säljs av amazon/i.test(mainMerchantText) ||
+      /amazon/i.test(soldByTabular);
 
     if (isAmazonSeller) {
       amazonBuyboxOwner = "Amazon";
@@ -1031,51 +913,41 @@ export async function auditAmazon(asin: string, marketplace: string, masterData:
 
       amazonBuyboxOwner = 
         soldByTabular ||
+        buyBoxContext.find('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
         buyBoxContext.find('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
         sellerTrigger ||
         merchantLink;
     }
 
-    // Final fallback if still not found
     if (!amazonBuyboxOwner) {
       amazonBuyboxOwner = 
         $('div[tabular-attribute-name="Sold by"] .tabular-buybox-text').first().text().trim() ||
         $('div[tabular-attribute-name="Verkauf durch"] .tabular-buybox-text').first().text().trim() ||
-        $('div[tabular-attribute-name="Vendu par"] .tabular-buybox-text').first().text().trim() ||
-        $('div[tabular-attribute-name="Venduto da"] .tabular-buybox-text').first().text().trim() ||
+        $('div[tabular-attribute-name="Shipper / Seller"] .tabular-buybox-text').first().text().trim() ||
         $('div[offer-display-feature-name="desktop-merchant-info"] .offer-display-feature-text-message').first().text().trim() ||
         $('#sellerProfileTriggerId').first().text().trim() ||
         $('#merchant-info a').first().text().trim();
     }
 
-    // Clean up the extracted seller name
     if (!amazonBuyboxOwner && mainMerchantText.length > 0) {
       const sellerLink = mainMerchantEl ? (mainMerchantEl as any).find('a').first().text().trim() || $('#merchant-info a').first().text().trim() : "";
-      if (sellerLink && !amazonPattern.test(sellerLink)) {
+      if (sellerLink && sellerLink.toLowerCase() !== 'amazon') {
         amazonBuyboxOwner = sellerLink;
       } else {
         amazonBuyboxOwner = mainMerchantText
           .replace(/Dispatched from and sold by\s*/i, '')
           .replace(/Dispatched from Amazon\s*\.?\s*/i, '')
           .replace(/Sold by\s*/i, '')
-          .replace(/Verkauf durch\s*/i, '')
-          .replace(/Vendu par\s*/i, '')
-          .replace(/Venduto da\s*/i, '')
           .replace(/Fulfilled by Amazon\s*\.?\s*/i, '')
           .replace(/\|.*$/s, '')
           .trim();
       }
     }
 
-    // Final cleanup
     amazonBuyboxOwner = amazonBuyboxOwner
       .replace(/Sold by\s*:?\s*/gi, '')
-      .replace(/Verkauf durch\s*:?\s*/gi, '')
-      .replace(/Vendu par\s*:?\s*/gi, '')
       .replace(/Venduto da\s*:?\s*/gi, '')
-      .replace(/Sprzedawca\s*:?\s*/gi, '')
-      .replace(/Säljs av\s*:?\s*/gi, '')
-      .replace(/Verkocht door\s*:?\s*/gi, '')
+      .replace(/Verkauf durch\s*:?\s*/gi, '')
       .replace(/Dispatched from and sold by\s*/gi, '')
       .replace(/Dispatched from Amazon\.?\s*/gi, '')
       .replace(/Fulfilled by Amazon\.?\s*/gi, '')
